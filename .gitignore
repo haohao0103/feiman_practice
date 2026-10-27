@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv*/
+*.venv/
+
+# 环境配置（含真实 API Key，绝不入库）
+webapp/config.json
+.env
+.env.local
+
+# IDE / 工具
+.codebuddy/
+.workbuddy/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# 日志
+*.log
+logs/
+scripts/_logs/
+
+# ── 运行时产物（可由流水线重新生成，不入库）────────────────────
+# work/ 有 6.5G：上传的录屏 mp4 + 19404 张抽帧 jpg + 音频中间件
+work/
+# outputs/ 是生成的课件产物（md / pdf / 图片）
+outputs/
+# 旧版操作手册等生成物
+*.pdf
+!examples/**/*.pdf
+
+# 临时/备份
+*.before_*
+*.bak
+*.swp
+.DS_Store
+
+# 一次性脚本（某次会话专用，不入库）
+scripts/restore_origin_repo*.py

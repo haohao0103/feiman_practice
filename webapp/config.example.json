@@ -1,0 +1,12 @@
+{
+  "_说明": "复制为 config.json 后填入真实 key。llm_* 为主通道，llm2_* 为备用通道（主通道挂了自动切备用）。",
+  "llm_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+  "llm_api_key": "在此填入你的 API Key",
+  "llm_model": "mimo-v2.6-pro",
+  "llm2_base_url": "https://api.xiaomimimo.com/v1",
+  "llm2_api_key": "在此填入备用通道 API Key",
+  "llm2_model": "mimo-v2.6-pro",
+  "llm_timeout": 180,
+  "llm_max_tokens": 8000,
+  "llm_temperature": 0.7
+}

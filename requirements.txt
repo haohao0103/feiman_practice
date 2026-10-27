@@ -1,0 +1,28 @@
+# 讲课稿工作台 · feiman_practice
+#
+# Python 3.12+ (开发环境 3.14.3)
+# 安装：pip install -r requirements.txt
+#
+# 注：faster-whisper 会拉入 ctranslate2 / onnxruntime，首次装体积较大；
+#     ASR 用的模型权重会在首次运行时自动下载到 ~/.cache/huggingface。
+
+# Web 服务
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9      # 文件上传（文档/录屏）
+
+# 语音转写（本地离线 ASR）
+faster-whisper>=1.0
+
+# 图像 / 图表
+numpy>=1.26
+matplotlib>=3.8
+pillow>=10.0
+
+# 文档解析
+python-docx>=1.1            # .docx
+beautifulsoup4>=4.12        # .html
+
+# PDF 生成
+fonttools>=4.50             # 嵌入中文字体子集

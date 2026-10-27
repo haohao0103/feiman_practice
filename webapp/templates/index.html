@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>讲课稿工作台</title>
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --line:#e5e7eb; --ink:#111827; --sub:#6b7280;
+  --blue:#2563eb; --blue-l:#eff6ff; --green:#16a34a; --green-l:#f0fdf4;
+  --amber:#d97706; --amber-l:#fffbeb; --red:#dc2626; --red-l:#fef2f2;
+  --radius:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);line-height:1.6;padding:0 0 60px}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:16px 28px;
+  position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:18px;font-weight:700}
+.badge{font-size:12px;padding:3px 9px;border-radius:20px;font-weight:600}
+.badge.ok{background:var(--green-l);color:var(--green)}
+.badge.warn{background:var(--amber-l);color:var(--amber)}
+main{max-width:1180px;margin:0 auto;padding:24px 20px}
+.tabs{display:flex;gap:8px;margin-bottom:20px}
+.tab{padding:9px 20px;border-radius:var(--radius);background:var(--card);border:1px solid var(--line);
+  cursor:pointer;font-size:14px;font-weight:600;color:var(--sub);transition:.15s}
+.tab.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin-bottom:18px}
+.card h2{font-size:15px;font-weight:700;margin-bottom:4px}
+.card .desc{font-size:13px;color:var(--sub);margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;font-size:14px;font-family:inherit;background:#fff;color:var(--ink)}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--blue-l);border-color:var(--blue)}
+textarea{min-height:84px;resize:vertical;line-height:1.6}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.row{grid-template-columns:1fr}}
+button{background:var(--blue);color:#fff;border:none;padding:11px 24px;border-radius:8px;
+  font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+button:hover{background:#1d4ed8}
+button:disabled{background:#9ca3af;cursor:not-allowed}
+button.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.hint{font-size:12px;color:var(--sub);margin-top:6px;line-height:1.5}
+.prog{height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin:14px 0 8px}
+.prog>div{height:100%;background:var(--blue);width:0;transition:width .4s}
+/* LLM 阶段是单次阻塞调用，无子进度：用滑动条表示"正在思考"，避免看着像卡死 */
+.prog>div.indet{width:45%!important;background:linear-gradient(90deg,#93c5fd,#2563eb);
+  animation:slide 1.25s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-45%}100%{margin-left:100%}}
+.status{font-size:13px;color:var(--sub);display:flex;justify-content:space-between;gap:12px}
+.elapsed{font-size:12px;color:var(--sub);margin:10px 0 2px;font-variant-numeric:tabular-nums}
+.steps{list-style:none;display:flex;flex-wrap:wrap;gap:6px 10px;margin:14px 0 2px;padding:0}
+.steps li{font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid var(--line);
+  color:var(--sub);background:#fff;display:flex;align-items:center;gap:5px}
+.steps li.done{background:var(--green-l);color:var(--green);border-color:#bbf7d0}
+.steps li.cur{background:var(--blue-l);color:var(--blue);border-color:var(--blue);font-weight:700;
+  box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.steps li .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.5}
+.steps li.cur .dot{opacity:1;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.6);opacity:.4}}
+.logbox{background:#0f172a;color:#cbd5e1;border-radius:8px;padding:12px;font-family:ui-monospace,monospace;
+  font-size:11.5px;line-height:1.65;max-height:230px;overflow:auto;margin-top:14px;white-space:pre-wrap}
+.resp{display:none;margin-top:16px}
+.resp.on{display:block}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:#f9fafb;font-weight:600;font-size:12px;color:var(--sub)}
+.ok{color:var(--green);font-weight:700}
+.bad{color:var(--red);font-weight:700}
+pre{background:#f9fafb;border:1px solid var(--line);border-radius:8px;padding:14px;
+  font-size:12.5px;line-height:1.7;max-height:460px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-top:12px}
+.imgs img{width:100%;border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.imgs .cap{font-size:11px;color:var(--sub);margin-top:3px}
+.dl{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.dl a{font-size:13px;color:var(--blue);text-decoration:none;font-weight:600}
+.notice{background:var(--amber-l);border:1px solid #fde68a;border-radius:8px;padding:11px 14px;
+  font-size:13px;margin-bottom:16px;color:#78350f}
+.err{background:var(--red-l);border:1px solid #fecaca;border-radius:8px;padding:11px 14px;
+  font-size:13px;margin-bottom:16px;color:#991b1b;white-space:pre-wrap}
+.hist{font-size:13px}
+.hist a{color:var(--blue);text-decoration:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>讲课稿工作台</h1>
+  <span class="badge" id="llmBadge">检查中…</span>
+  <span class="badge" id="asrBadge">ASR</span>
+  <span style="margin-left:auto;font-size:12px;color:var(--sub)">
+    费曼学习法 · 输出阶段工具链
+  </span>
+</header>
+
+<main>
+  <div class="tabs">
+    <div class="tab on" data-tab="a">① 视频 → 风格化讲课稿</div>
+    <div class="tab" data-tab="d">② 文档 → 讲课课件</div>
+    <div class="tab" data-tab="b">③ 录屏 → 对账 → 改进稿</div>
+    <div class="tab" data-tab="e">④ 练习追踪</div>
+    <div class="tab" data-tab="c">历史任务</div>
+  </div>
+
+  <!-- ============ 能力 A ============ -->
+  <section id="tab-a">
+    <div class="card">
+      <h2>B 站视频 → 风格化逐字稿</h2>
+      <div class="desc">填入 B 站视频页地址，系统会下载视频、离线转写、抽取原视频画面，
+        生成忠实逐字稿，再按指定风格改写成你用来录制的讲课稿。</div>
+
+      <label>视频地址</label>
+      <input type="text" id="a_url" placeholder="https://www.bilibili.com/video/BV1rXXfBiECa/">
+      <div class="hint">支持单个视频（非合集、非分P）。下载 1080p 优先。</div>
+
+      <div class="row">
+        <div>
+          <label>讲课风格</label>
+          <select id="a_style"></select>
+        </div>
+        <div>
+          <label>风格强度</label>
+          <select id="a_intensity">
+            <option value="1">1 · 轻度（保守，改动最小）</option>
+            <option value="2">2 · 中度（稳中带皮）</option>
+            <option value="3" selected>3 · 重度（强对话 + 强类比 + 情绪起伏）</option>
+          </select>
+        </div>
+      </div>
+
+      <label>额外要求（可选）</label>
+      <textarea id="a_notes" placeholder="例如：第 3 段要更慢；例子部分多用 TradingView 截图；结尾必须留一个复盘动作"></textarea>
+
+      <div style="margin-top:18px">
+        <button id="a_go">开始生成</button>
+        <button class="ghost" id="a_demo" style="margin-left:8px">填入示例地址</button>
+      </div>
+
+      <div class="resp" id="a_resp">
+        <ul class="steps" id="a_steps"></ul>
+        <div class="elapsed" id="a_elapsed">已运行 0s</div>
+        <div class="prog"><div id="a_bar"></div></div>
+        <div class="status"><span id="a_stage">等待中</span><span id="a_pct">0%</span></div>
+        <div class="logbox" id="a_log"></div>
+        <div id="a_out"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 能力 C：文档 → 课件 ============ -->
+  <section id="tab-d" style="display:none">
+    <div class="card">
+      <h2>文档 → 讲课逐字稿课件</h2>
+      <div class="desc">上传讲义 / 教材 / 研报 / 笔记，系统按文档原有标题结构重排成讲课大纲，
+        展开成带表演提示的逐字稿，并生成配套概念图与事实核查纠错。</div>
+
+      <label>文档文件</label>
+      <input type="file" id="d_file" accept=".md,.markdown,.txt,.docx,.doc,.rtf,.html,.htm,.pdf">
+      <div class="hint">支持 md / txt / docx / doc / rtf / html / pdf，单文件 ≤ 800MB</div>
+
+      <div class="row">
+        <div>
+          <label>讲课风格</label>
+          <select id="d_style"></select>
+        </div>
+        <div>
+          <label>风格强度</label>
+          <select id="d_intensity">
+            <option value="1">1 · 轻度</option>
+            <option value="2">2 · 中度</option>
+            <option value="3" selected>3 · 重度</option>
+          </select>
+        </div>
+      </div>
+
+      <label>额外要求（可选）</label>
+      <textarea id="d_notes" placeholder="例如：第三期要加一个复盘作业；案例部分保留原文档的例子"></textarea>
+
+      <div style="margin-top:18px">
+        <button id="d_go">开始生成课件</button>
+      </div>
+
+      <div class="resp" id="d_resp">
+        <ul class="steps" id="d_steps"></ul>
+        <div class="elapsed" id="d_elapsed">已运行 0s</div>
+        <div class="prog"><div id="d_bar"></div></div>
+        <div class="status"><span id="d_stage">等待中</span><span id="d_pct">0%</span></div>
+        <div class="logbox" id="d_log"></div>
+        <div id="d_out"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 能力 B ============ -->
+  <section id="tab-b" style="display:none">
+    <div class="card">
+      <h2>本地录屏 → 评估 → 改进稿</h2>
+      <div class="desc">上传你录好的视频，系统会转写、算演讲指标、分析画面构成，
+        与稿子承诺值逐项对账，并直接产出改好的新版讲课稿。</div>
+
+      <label>录屏文件</label>
+      <input type="file" id="b_file" accept="video/*">
+      <div class="hint">支持 mp4 / mov / mkv / m4v，单文件 ≤ 800MB，时长 ≤ 60 分钟</div>
+
+      <div class="row">
+        <div>
+          <label>讲课风格</label>
+          <select id="b_style"></select>
+        </div>
+        <div>
+          <label>风格强度</label>
+          <select id="b_intensity">
+            <option value="1">1 · 轻度</option>
+            <option value="2">2 · 中度</option>
+            <option value="3" selected>3 · 重度</option>
+          </select>
+        </div>
+      </div>
+
+      <label>额外要求（可选）</label>
+      <textarea id="b_notes" placeholder="例如：保留我原来的口头禅；案例部分不要加新内容"></textarea>
+
+      <label>对照用课件（可选，粘贴你这次用的讲课稿）</label>
+      <textarea id="b_base" placeholder="留空则只按通用指标评估；填了会额外做「课件 vs 试讲」逐段对账：逐段判覆盖/漏讲/说错/检验提问是否问了/行动指令是否给了/该指的画面是否指了，并给出掌握度评分与对账改进稿"></textarea>
+
+      <div style="margin-top:18px">
+        <button id="b_go">开始评估</button>
+      </div>
+
+      <div class="resp" id="b_resp">
+        <ul class="steps" id="b_steps"></ul>
+        <div class="elapsed" id="b_elapsed">已运行 0s</div>
+        <div class="prog"><div id="b_bar"></div></div>
+        <div class="status"><span id="b_stage">等待中</span><span id="b_pct">0%</span></div>
+        <div class="logbox" id="b_log"></div>
+        <div id="b_out"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 练习追踪 ============ -->
+  <section id="tab-e" style="display:none">
+    <div class="card">
+      <h2>练习追踪 · 掌握度趋势</h2>
+      <div class="desc">每次「录屏 → 对账」都会自动归档一轮。同一份课件归为一个练习项目，
+        记录掌握度趋势、跨轮反复出问题的段，并给出下一步该练什么。</div>
+      <div id="e_list" class="hist">加载中…</div>
+    </div>
+    <div class="card" id="e_detail_card" style="display:none">
+      <h2 id="e_detail_title">项目详情</h2>
+      <div id="e_detail"></div>
+    </div>
+  </section>
+
+  <!-- ============ 历史 ============ -->
+  <section id="tab-c" style="display:none">
+    <div class="card">
+      <h2>历史任务</h2>
+      <div class="desc">所有任务产物都落盘保存，进程重启也能查。</div>
+      <div class="hist" id="c_list">加载中…</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+let CFG = null;
+let lastBaseline = null;   // {path, text} 第一步生成的逐字稿，作为第二步"对照用稿子"基线
+let bAutoFilled = false;   // 第二步基线是否已自动填入（避免反复覆盖用户手动清空）
+
+// 第一步完成后，拉取生成的逐字稿文本存为"待评估基线"（本地持久化，刷新不丢）
+async function stashBaseline(r){
+  if (!r || !r.script_path) return;
+  try {
+    const p = await (await fetch('/api/preview?path='+encodeURIComponent(r.script_path))).json();
+    lastBaseline = { path: r.script_path, text: p.text || '' };
+    try { localStorage.setItem('feiman_last_baseline', JSON.stringify(lastBaseline)); } catch(e){}
+  } catch(e){}
+}
+
+// 把基线带入第二步"对照用稿子"；仅当文本框为空（或强制）时填入
+function carryBaseline(force){
+  if (!lastBaseline || !lastBaseline.text) return false;
+  if (force || (!bAutoFilled && !$('#b_base').value.trim())){
+    $('#b_base').value = lastBaseline.text;
+    bAutoFilled = true;
+    showBaselineNote();
+  }
+  return true;
+}
+
+function showBaselineNote(){
+  let n = $('#baseline_note');
+  if(!n){
+    n = document.createElement('div');
+    n.id = 'baseline_note'; n.className = 'notice';
+    $('#b_base').insertAdjacentElement('afterend', n);
+  }
+  const name = (lastBaseline.path||'').split('/').pop();
+  n.textContent = '已自动带入第一步生成的逐字稿课件（'+name+'）。可直接评估，也可修改或清空。';
+}
+
+// 结果页一键跳转：切到第二步并带入本稿作为对照
+function gotoBWithBaseline(){
+  $$('.tab').forEach(x => x.classList.remove('on'));
+  $('.tab[data-tab="b"]').classList.add('on');
+  ['a','b','c','d','e'].forEach(k => $('#tab-'+k).style.display = (k==='b'?'':'none'));
+  carryBaseline(true);
+  $('#tab-b').scrollIntoView();
+}
+
+$$('.tab').forEach(t => t.onclick = () => {
+  $$('.tab').forEach(x => x.classList.remove('on'));
+  t.classList.add('on');
+  ['a','b','c','d','e'].forEach(k => $('#tab-'+k).style.display = (k===t.dataset.tab?'':'none'));
+  if (t.dataset.tab==='c') loadHistory();
+  if (t.dataset.tab==='b') carryBaseline(false);   // 第一步有产出则自动带入对照稿
+  if (t.dataset.tab==='e') loadPractice();
+});
+
+async function init(){
+  const r = await fetch('/api/config'); CFG = await r.json();
+  const opts = CFG.styles.map(s=>`<option value="${s.key}">${s.name} —— ${s.desc}</option>`).join('');
+  $('#a_style').innerHTML = opts; $('#b_style').innerHTML = opts; $('#d_style').innerHTML = opts;
+  const b = $('#llmBadge');
+  if (CFG.llm_ready){ b.textContent = 'LLM 已配置 · '+CFG.llm_model; b.className='badge ok'; }
+  else { b.textContent = '未配置 LLM · 将输出素材包'; b.className='badge warn'; }
+  $('#asrBadge').textContent = '本地 ASR · '+CFG.asr_model;
+  $('#asrBadge').className='badge ok';
+  // 恢复上次第一步生成的逐字稿基线（刷新后仍可带入第二步）
+  try {
+    const s = localStorage.getItem('feiman_last_baseline');
+    if (s) lastBaseline = JSON.parse(s);
+  } catch(e){}
+}
+
+$('#a_demo').onclick = () => {
+  $('#a_url').value = 'https://www.bilibili.com/video/BV1rXXfBiECa/';
+};
+
+function logLine(box, txt){
+  const b = $(box); b.textContent += txt + "\n"; b.scrollTop = b.scrollHeight;
+}
+
+// 两条链路的标准阶段顺序（与后端 _STAGE_ORDER 对应），用于页面步进器
+const STAGES = {
+  video_to_script: [["download","下载视频"],["extract_audio","抽取音轨"],["asr","语音转写"],
+    ["segment_outline","自动分段大纲"],["extract_frames","抽取关键画面"],["gen_diagram","生成自制图"],
+    ["build_script","生成讲课稿"],["fact_check","核查纠错"],["assemble","组装与PDF"],["self_check","稿子自检"]],
+  video_review: [["upload","接收视频"],["extract_audio","抽取音轨"],["asr","语音转写"],
+    ["analyze","演讲指标分析"],["visual","画面构成分析"],["baseline","与课件逐段对账"],
+    ["improve","生成改进稿"],["self_check","稿子自检"]],
+  doc_to_courseware: [["upload","接收文档"],["doc_read","读取文档"],["segment_outline","文档分段大纲"],
+    ["gen_diagram","生成自制图"],["build_script","生成讲课稿"],["fact_check","核查纠错"],
+    ["assemble","组装与PDF"],["self_check","稿子自检"]],
+};
+
+function renderSteps(prefix, kind, curStage){
+  const list = STAGES[kind] || [];
+  const idx = list.findIndex(s => s[0] === curStage);
+  $('#'+prefix+'_steps').innerHTML = list.map((s,i)=>{
+    let cls = 'pending';
+    if (idx >= 0 && i < idx) cls = 'done';
+    else if (i === idx) cls = 'cur';
+    const mark = cls==='done' ? '✓' : (cls==='cur' ? '●' : '·');
+    return `<li class="${cls}"><span class="dot"></span>${mark} ${s[1]}</li>`;
+  }).join('');
+}
+
+function startTimer(prefix){
+  const key = prefix+'_timer';
+  if (window[key]) clearInterval(window[key]);
+  const t0 = Date.now();
+  const el = $('#'+prefix+'_elapsed');
+  const tick = ()=>{ const s = Math.round((Date.now()-t0)/1000);
+    el.textContent = '已运行 '+s+'s'+(s>=60?('（'+(s/60).toFixed(1)+'min）'):''); };
+  tick();
+  window[key] = setInterval(tick, 1000);
+}
+function stopTimer(prefix){
+  const key = prefix+'_timer';
+  if (window[key]){ clearInterval(window[key]); window[key]=null; }
+}
+
+async function poll(tid, prefix, onDone){
+  const t = await (await fetch('/api/task/'+tid)).json();
+  const pct = Math.round((t.progress||0)*100);
+  const bar = $('#'+prefix+'_bar');
+  // LLM 阶段已改为流式进度：仅在"尚未收到首个流式分片"的短暂窗口用滑动条表示忙等，
+  // 一旦第一个真实分片到达（progress>=0.02）就切换到真实百分比，绝不伪造进度。
+  const llmStages = ['style_rewrite','improve'];
+  if (t.status === 'running' && llmStages.includes(t.stage) && (t.progress||0) < 0.02){
+    bar.classList.add('indet');
+  } else {
+    bar.classList.remove('indet');
+    bar.style.width = pct+'%';
+  }
+  $('#'+prefix+'_pct').textContent = pct+'%';
+  $('#'+prefix+'_stage').textContent = t.stage_label || t.status;
+  renderSteps(prefix, t.kind, t.stage);
+  if (t.logs && t.logs.length){
+    const box = $('#'+prefix+'_log');
+    box.textContent = t.logs.join('\n');
+    box.scrollTop = box.scrollHeight;
+  }
+  if (t.status === 'done'){ stopTimer(prefix); onDone(t); return; }
+  if (t.status === 'failed'){
+    stopTimer(prefix);
+    $('#'+prefix+'_stage').textContent = '失败';
+    $('#'+prefix+'_out').innerHTML = '<div class="err">'+ (t.error||'未知错误') +'</div>';
+    return;
+  }
+  setTimeout(()=>poll(tid, prefix, onDone), 1500);
+}
+
+$('#a_go').onclick = async () => {
+  const url = $('#a_url').value.trim();
+  if(!url){ alert('请填写视频地址'); return; }
+  $('#a_resp').classList.add('on'); $('#a_log').textContent=''; $('#a_out').innerHTML='';
+  $('#a_go').disabled = true;
+  const r = await fetch('/api/video-to-script',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({url, style:$('#a_style').value, intensity:+$('#a_intensity').value, notes:$('#a_notes').value})});
+  const j = await r.json();
+  if(!j.task_id){ $('#a_out').innerHTML='<div class="err">'+JSON.stringify(j)+'</div>'; $('#a_go').disabled=false; return; }
+  renderSteps('a', 'video_to_script', null); startTimer('a');
+  poll(j.task_id, 'a', t => { $('#a_go').disabled=false; renderA(t); });
+};
+
+$('#b_go').onclick = async () => {
+  const f = $('#b_file').files[0];
+  if(!f){ alert('请选择录屏文件'); return; }
+  $('#b_resp').classList.add('on'); $('#b_log').textContent=''; $('#b_out').innerHTML='';
+  $('#b_go').disabled = true;
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('style', $('#b_style').value);
+  fd.append('intensity', $('#b_intensity').value);
+  fd.append('notes', $('#b_notes').value);
+  fd.append('baseline_script', $('#b_base').value);
+  const r = await fetch('/api/video-review',{method:'POST', body:fd});
+  const j = await r.json();
+  if(!j.task_id){ $('#b_out').innerHTML='<div class="err">'+(j.detail||JSON.stringify(j))+'</div>'; $('#b_go').disabled=false; return; }
+  renderSteps('b', 'video_review', null); startTimer('b');
+  poll(j.task_id, 'b', t => { $('#b_go').disabled=false; renderB(t); });
+};
+
+// 能力C：文档 → 课件
+$('#d_go').onclick = async () => {
+  const f = $('#d_file').files[0];
+  if(!f){ alert('请选择文档文件'); return; }
+  $('#d_resp').classList.add('on'); $('#d_log').textContent=''; $('#d_out').innerHTML='';
+  $('#d_go').disabled = true;
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('style', $('#d_style').value);
+  fd.append('intensity', $('#d_intensity').value);
+  fd.append('notes', $('#d_notes').value);
+  const r = await fetch('/api/doc-to-courseware',{method:'POST', body:fd});
+  const j = await r.json();
+  if(!j.task_id){ $('#d_out').innerHTML='<div class="err">'+esc(JSON.stringify(j))+'</div>'; $('#d_go').disabled=false; return; }
+  renderSteps('d', 'doc_to_courseware', null); startTimer('d');
+  poll(j.task_id, 'd', t => { $('#d_go').disabled=false; renderD(t); });
+};
+
+function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function renderA(t){  const r = t.result || {};
+  let h = '<h3 style="font-size:14px;margin:18px 0 8px">结果 · 你的逐字稿课件</h3>';
+  if (r.quality_gate && r.quality_gate.length){
+    h += `<div class="err">⚠ 本稿未通过质量闸门：${esc(r.quality_gate.join('；'))}。请先补齐再录制。</div>`;
+  }
+  h += `<div class="notice">${esc(r.llm_note||'')} ｜ 原视频 ${esc(r.video||'')}（${(r.duration_sec/60||0).toFixed(1)} 分钟）｜ ${r.images||0} 张画面已嵌入课件</div>`;
+  h += '<div class="dl">';
+  if (r.pdf_path) h += `<a href="/api/file?path=${encodeURIComponent(r.pdf_path)}" target="_blank">⬇ 下载课件PDF</a>`;
+  if (r.script_path) h += `<a href="/api/file?path=${encodeURIComponent(r.script_path)}" target="_blank">⬇ 讲课稿MD</a>`;
+  h += `<button class="ghost" style="padding:8px 16px" onclick="gotoBWithBaseline()">② 用这份稿子评估我的录制 →</button>`;
+  h += '</div>';
+  if (r.assets && r.assets.length){
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">画面（来自原视频）</h3><div class="imgs">';
+    r.assets.slice(0,30).forEach(a=>{
+      h += `<div><img src="/api/preview?path=${encodeURIComponent(a.file)}" onclick="window.open('/api/preview?path=${encodeURIComponent(a.file)}','_blank')"><div class="cap">${a.key} · ${Math.floor(a.time_sec/60)}:${String(Math.floor(a.time_sec%60)).padStart(2,'0')}</div></div>`;
+    });
+    h += '</div>';
+  }
+  if (r.preview) h += '<h3 style="font-size:14px;margin:18px 0 6px">稿件预览</h3><pre>'+esc(r.preview)+'</pre>';
+  $('#a_out').innerHTML = h;
+  stashBaseline(r);   // 缓存生成的逐字稿，供第二步自动带入对照
+}
+
+// 能力C 结果渲染（文档 → 课件）
+function renderD(t){  const r = t.result || {};
+  let h = '<h3 style="font-size:14px;margin:18px 0 8px">结果 · 文档转出的讲课课件</h3>';
+  if (r.quality_gate && r.quality_gate.length){
+    h += `<div class="err">⚠ 本稿未通过质量闸门：${esc(r.quality_gate.join('；'))}。请先补齐再录制。</div>`;
+  }
+  h += `<div class="notice">${esc(r.llm_note||'')} ｜ 源文档 ${esc(r.video||'')}（约 ${(r.duration_sec/60||0).toFixed(1)} 分钟）｜ ${r.images||0} 张图已嵌入课件</div>`;
+  h += '<div class="dl">';
+  if (r.pdf_path) h += `<a href="/api/file?path=${encodeURIComponent(r.pdf_path)}" target="_blank">⬇ 下载课件PDF</a>`;
+  if (r.script_path) h += `<a href="/api/file?path=${encodeURIComponent(r.script_path)}" target="_blank">⬇ 讲课稿MD</a>`;
+  h += `<button class="ghost" style="padding:8px 16px" onclick="gotoBWithBaseline()">③ 用这份课件对账我的试讲 →</button>`;
+  h += '</div>';
+  if (r.assets && r.assets.length){
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">课件配图</h3><div class="imgs">';
+    r.assets.slice(0,30).forEach(a=>{
+      h += `<div><img src="/api/preview?path=${encodeURIComponent(a.file)}" onclick="window.open('/api/preview?path=${encodeURIComponent(a.file)}','_blank')"><div class="cap">${a.key} · ${esc(a.note||'')}</div></div>`;
+    });
+    h += '</div>';
+  }
+  if (r.preview) h += '<h3 style="font-size:14px;margin:18px 0 6px">课件预览</h3><pre>'+esc(r.preview)+'</pre>';
+  $('#d_out').innerHTML = h;
+  stashBaseline(r);   // 课件作为下一步「逐段对账」的基线
+}
+
+function renderB(t){
+  const r = t.result || {};
+  let h = '';
+  if (r.mastery){
+    const m = r.mastery;
+    const g = m.score>=85?'A · 已掌握':(m.score>=70?'B · 基本掌握':(m.score>=55?'C · 半懂':'D · 未掌握'));
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">掌握度（课件 ↔ 试讲逐段对账）</h3>';
+    h += `<div class="notice">得分 <b>${m.score}</b> · ${esc(g)} ｜ 覆盖 ${(m.coverage*100).toFixed(0)}%`
+      + `（全${m.segments_covered}/半${m.segments_partial}/漏${m.segments_missed}）｜ 说错 ${m.wrong_count} 处`
+      + (m.check_q_rate!=null?` ｜ 提问执行 ${(m.check_q_rate*100).toFixed(0)}%`:'')
+      + (m.action_rate!=null?` ｜ 行动执行 ${(m.action_rate*100).toFixed(0)}%`:'')
+      + (m.picture_rate!=null?` ｜ 画面引用 ${(m.picture_rate*100).toFixed(0)}%`:'')+'</div>';
+    if (m.summary && m.summary.weak){
+      h += `<div class="notice">最该改：${esc(m.summary.weak)}</div>`;
+    }
+  }
+  if (r.gap){
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">逐项对账</h3><table>';
+    h += '<tr><th>指标</th><th>目标</th><th>实测</th><th>状态</th><th>改法</th></tr>';
+    r.gap.rows.forEach(x=>{
+      h += `<tr><td>${x.metric}</td><td>${esc(x.promised)}</td><td>${esc(x.actual)}</td>`;
+      h += `<td class="${x.ok?'ok':'bad'}">${x.ok?'✅':'❌'}</td><td>${esc(x.fix)}</td></tr>`;
+    });
+    h += '</table>';
+  }
+  if (r.metrics){
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">演讲指标</h3><table>';
+    Object.entries(r.metrics).forEach(([k,v])=>{
+      if(k==='segments') return;
+      h += `<tr><td>${k}</td><td>${v}</td></tr>`;
+    });
+    h += '</table>';
+  }
+  if (r.checks){
+    h += '<h3 style="font-size:14px;margin:18px 0 6px">改进稿自检</h3><table>';
+    h += `<tr><td>时长</td><td>${r.checks.body_duration_min||'-'} 分钟</td></tr>`;
+    h += `<tr><td>类比 / 提问 / 行动</td><td>${r.checks.analogy_marks||0} / ${r.checks.check_questions||0} / ${r.checks.action_instructions||0}</td></tr>`;
+    h += '</table>';
+  }
+  h += '<div class="dl">';
+  if (r.align_report_path) h += `<a href="/api/file?path=${encodeURIComponent(r.align_report_path)}" target="_blank">⬇ 试讲对账报告</a>`;
+  if (r.practice_report_path) h += `<a href="/api/file?path=${encodeURIComponent(r.practice_report_path)}" target="_blank">⬇ 练习追踪报告</a>`;
+  if (r.report_path) h += `<a href="/api/file?path=${encodeURIComponent(r.report_path)}" target="_blank">⬇ 通用评估报告</a>`;
+  if (r.script_path) h += `<a href="/api/file?path=${encodeURIComponent(r.script_path)}" target="_blank">⬇ 改进稿</a>`;
+  h += '</div>';
+  if (r.practice_key){
+    h += `<div class="hint" style="margin-top:8px">已归档到练习项目「${esc(r.practice_key)}」`
+      + `（在「④ 练习追踪」tab 看掌握度趋势与反复薄弱段）</div>`;
+  }
+  if (r.preview) h += '<h3 style="font-size:14px;margin:18px 0 6px">改进稿预览</h3><pre>'+esc(r.preview)+'</pre>';
+  $('#b_out').innerHTML = h;
+}
+
+// ============ 练习追踪 ============
+async function loadPractice(){
+  const r = await fetch('/api/practice');
+  const j = await r.json();
+  const items = j.items || [];
+  if(!items.length){
+    $('#e_list').innerHTML='<div class="hint">还没有练习记录。先在「③ 录屏 → 对账」里传一次试讲并填入对照课件。</div>';
+    return;
+  }
+  let h='<table><tr><th>练习项目</th><th>轮次</th><th>首轮→最新</th><th>最高</th><th>趋势</th><th>状态</th><th></th></tr>';
+  items.forEach(p=>{
+    const tr = {up:'进步',flat:'卡住',down:'退步',first:'首轮'}[p.trend] || p.trend;
+    h += `<tr><td>${esc(p.title)}</td><td>${p.rounds}</td>`;
+    h += `<td>${p.first_score!=null?p.first_score.toFixed(0):'—'} → ${p.last_score!=null?p.last_score.toFixed(0):'—'}</td>`;
+    h += `<td>${p.best_score!=null?p.best_score.toFixed(0):'—'}</td>`;
+    h += `<td>${tr}</td>`;
+    h += `<td class="${p.mastered?'ok':''}">${p.mastered?'已达标':'未达标'}</td>`;
+    h += `<td><a href="#" onclick="openPractice('${encodeURIComponent(p.key)}');return false;">查看曲线</a></td></tr>`;
+  });
+  h += '</table>';
+  $('#e_list').innerHTML = h;
+}
+
+async function openPractice(key){
+  const r = await fetch('/api/practice/detail?key='+encodeURIComponent(key));
+  if(!r.ok){ alert('读取失败'); return; }
+  const j = await r.json();
+  const d = j.data, t = j.trend, weak = j.weak || [];
+  const last = t.scores.length ? t.scores[t.scores.length-1] : 0;
+  const th = d.threshold || 85;
+  let h = `<div class="notice"><b>${esc(d.title)}</b> ｜ 当前 <b>${last.toFixed(0)}</b> 分`
+    + ` ｜ 达标线 ${th} ｜ 最高 ${(t.best||0).toFixed(0)} ｜ 趋势 ${({up:'进步',flat:'卡住',down:'退步',first:'首轮'})[t.trend]||t.trend}</div>`;
+  if(j.chart_path){
+    h += `<div style="margin:12px 0"><img src="/api/preview?path=${encodeURIComponent(j.chart_path)}" style="max-width:100%;border:1px solid var(--line);border-radius:8px"></div>`;
+  }
+  h += '<h3 style="font-size:14px;margin:16px 0 6px">各轮明细</h3><table>';
+  h += '<tr><th>轮</th><th>时间</th><th>得分</th><th>覆盖</th><th>忠实</th><th>提问</th><th>行动</th><th>画面</th></tr>';
+  (d.rounds||[]).forEach(r=>{
+    const dm = r.dims||{};
+    const pc = k => dm[k]!=null ? (dm[k]*100).toFixed(0)+'%' : '—';
+    h += `<tr><td>${r.round}</td><td>${esc(r.at||'')}</td><td><b>${(r.score||0).toFixed(0)}</b></td>`
+      + `<td>${pc('coverage')}</td><td>${pc('fidelity')}</td><td>${pc('check_q_rate')}</td>`
+      + `<td>${pc('action_rate')}</td><td>${pc('picture_rate')}</td></tr>`;
+  });
+  h += '</table>';
+  if(weak.length){
+    h += '<h3 style="font-size:14px;margin:16px 0 6px">反复薄弱段（跨轮累计）</h3><table>';
+    h += '<tr><th>段</th><th>期</th><th>出问题</th><th>情况</th></tr>';
+    weak.forEach(w=>{
+      h += `<tr><td>${esc(w.title)}</td><td>${esc(w.part||'')}</td><td>${w.weak_rounds}/${w.total}</td>`
+        + `<td>${esc((w.reasons||[]).join('；'))}</td></tr>`;
+    });
+    h += '</table>';
+  }
+  const dl=[];
+  if(j.report_path) dl.push(`<a href="/api/file?path=${encodeURIComponent(j.report_path)}" target="_blank">⬇ 练习报告</a>`);
+  h += `<div class="dl">${dl.join('')}</div>`;
+  $('#e_detail').innerHTML = h;
+  $('#e_detail_title').textContent = '项目详情 · ' + d.title;
+  $('#e_detail_card').style.display = '';
+  $('#e_detail_card').scrollIntoView();
+}
+
+async function loadHistory(){  const ts = await (await fetch('/api/tasks')).json();
+  if(!ts.length){ $('#c_list').innerHTML='<div class="hint">还没有任务</div>'; return; }
+  let h='<table><tr><th>时间</th><th>类型</th><th>状态</th><th>进度</th><th></th></tr>';
+  ts.forEach(t=>{
+    h += `<tr><td>${esc(t.created_at)}</td><td>${t.kind==='video_to_script'?'视频→讲课稿':'录屏→评估'}</td>`;
+    h += `<td class="${t.status==='done'?'ok':(t.status==='failed'?'bad':'')}">${t.status}</td>`;
+    h += `<td>${(t.progress*100).toFixed(0)}%</td>`;
+    h += `<td><a href="#" onclick="openTask('${t.id}')">查看</a></td></tr>`;
+  });
+  h+='</table>';
+  $('#c_list').innerHTML=h;
+}
+async function openTask(id){
+  const t = await (await fetch('/api/task/'+id)).json();
+  let h = `<h3 style="font-size:14px;margin:12px 0 6px">${esc(t.id)}</h3>`;
+  if (t.error) h += `<div class="err">${esc(t.error)}</div>`;
+  if (t.result && t.result.script_path){
+    h += '<div class="dl">';
+    h += `<a href="/api/file?path=${encodeURIComponent(t.result.script_path)}" target="_blank">⬇ 讲课稿</a>`;
+    if(t.result.report_path) h += `<a href="/api/file?path=${encodeURIComponent(t.result.report_path)}" target="_blank">⬇ 评估报告</a>`;
+    h += '</div>';
+  }
+  h += '<div class="logbox">'+esc((t.logs||[]).join('\n'))+'</div>';
+  $('#c_list').innerHTML = h;
+}
+
+init();
+</script>
+</body>
+</html>

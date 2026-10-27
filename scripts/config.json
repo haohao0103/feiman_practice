@@ -1,0 +1,60 @@
+{
+  "_comment": "全部可调参数集中于此。改动只改这里，不碰代码。",
+  "_paths_comment": "paths 里的相对路径都相对**仓库根目录**（pipeline.py 会自动解析）",
+
+  "source": {
+    "_comment": "被评估的录屏绝对路径；换片改这一处（或用环境变量 FEIMAN_VIDEO）",
+    "video": "",
+    "_comment_asr": "ASR 原始转写落盘位置（可从已有结果复用，见 asr.reuse_from）",
+    "asr_raw": "work/asr_raw.txt"
+  },
+
+  "asr": {
+    "_comment": "reuse_from 非空时跳过转写，直接读已有 asr_raw.txt（提速关键）",
+    "reuse_from": "work/asr_raw.txt",
+    "chunk_sec": 300,
+    "enable_chunking": false
+  },
+
+  "media": {
+    "_comment": "抽帧规格：width=0 表示不缩放；fps_interval 秒/帧",
+    "frame_interval_sec": 10,
+    "frame_width": 1400,
+    "frame_quality": 3,
+    "audio_sample_rate": 16000,
+    "audio_channels": 1
+  },
+
+  "analysis": {
+    "_comment": "各阶段的启用开关，跑不动的直接关掉",
+    "stages": {
+      "media": true,
+      "parse": true,
+      "metrics": true,
+      "visual": true,
+      "scene": true,
+      "repetition": true,
+      "feynman": true,
+      "volume": true,
+      "audio_quality": true,
+      "figures": true,
+      "report": true
+    },
+    "parallel": true,
+    "_comment_parallel": "parallel=true 时，无依赖的阶段并发跑（线程池，IO/CPU 混合）"
+  },
+
+  "paths": {
+    "root": ".",
+    "work": "work",
+    "logs": "logs",
+    "outputs": "outputs",
+    "images": "outputs/pa_images"
+  },
+
+  "cache": {
+    "_comment": "按输入指纹跳过重算；force=true 时全部重跑",
+    "enabled": true,
+    "force": false
+  }
+}
