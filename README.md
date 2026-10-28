@@ -142,6 +142,34 @@ python3 scripts/analyze_frame_diversity.py       # 画面相似度分布（阈�
 
 ---
 
+## 输入源与网络限制
+
+tab① 的输入框接受两种东西：
+
+| 形式 | 例子 | 说明 |
+|---|---|---|
+| **视频页地址** | `https://www.bilibili.com/video/BV1rXXfBiECa/`<br>`https://www.youtube.com/watch?v=8lNWd7PvvCU` | yt-dlp 支持的站点都走这条路（B 站 / YouTube / Vimeo / X …）。省略 `https://` 也认；只给 `BV1xxxxxxxx` 会自动补成 B 站地址 |
+| **本地视频文件路径** | `/Users/mac/Desktop/lesson.mp4` | **不下载**，直接读这个文件。`~` 开头会展开，`file://` 前缀会剥掉 |
+
+### 为什么需要"本地路径"这条路
+
+当前运行环境（沙箱出口）**只通国内站**：实测 B 站 HTTP 200（0.3s），而
+youtube.com / github.com / google.com 全部超时（走代理和直连都一样，代理报
+`Tunnel connection failed: 502`）。所以境外源直接填 URL 会失败，此时：
+
+```bash
+# 在本机终端（沙箱外）下载，指定 1080p H.264 视频 + 最佳音轨
+yt-dlp -f 'bv*[height<=1080][vcodec^=avc1]+ba/b' -o video.mp4 '<视频页地址>'
+```
+
+把下载好的文件路径粘进同一个输入框即可（tab③ 的「上传录屏」也行）。
+失败时报错会直接说明是"网络出口限制"并给出这两条绕行办法，不会只甩一个 `rc=1`。
+
+> 顺带说明：GitHub 的 **SSH 能通**（`git push` 正常），但 **HTTPS 不通** —— 出口是按
+> 端口/协议分流的，不是按域名拉黑。
+
+---
+
 ## 磁盘管理（work/ 暂存区自动清理）
 
 上传录屏（~760M）+ 抽帧（~1100 张 jpg/任务）会持续堆积，**实测三天就占 6.5G**。

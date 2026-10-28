@@ -19,22 +19,85 @@ CN = re.compile(r"[\u4e00-\u9fff]")
 
 
 # ================================================================ 链路 A
-def normalize_bilibili_url(raw):
-    """校验并规范化 B 站视频地址，返回 (url, error)。
+def _download_hint(url, err):
+    """把 yt-dlp 的原始报错翻译成可执行的下一步。
 
-    error 非空表示不合法。放宽规则：允许省略 https:// 协议前缀，
-    也允许省略 www.（用户从浏览器/分享复制常漏协议头）。
-    跟踪参数（?spm_id_from=...）保留，yt-dlp 能识别。
+    ★ 实测踩过：当前运行环境的出口网络只通国内站（youtube / github / google
+    全部超时），yt-dlp 报的是很难懂的 "Unable to connect to proxy ... 502"。
+    这时要直接告诉用户「换个来源或在本机下载后指路径」，而不是甩原始报错。
+    """
+    s = str(err)
+    low = s.lower()
+    host = re.sub(r"^https?://([^/]+).*$", r"\1", url or "")
+    overseas = any(h in host for h in ("youtube.com", "youtu.be", "vimeo.com",
+                                       "twitter.com", "x.com", "tiktok.com",
+                                       "instagram.com", "facebook.com"))
+    net_hint = ("proxy" in low or "502" in s or "timed out" in low
+                or "unable to connect" in low or "connection" in low)
+    if net_hint and overseas:
+        return (f"{s}\n\n"
+                f"【网络出口限制】当前环境访问不了 {host}（境外站点在沙箱出口被拦）。\n"
+                f"两个绕行办法：\n"
+                f"  ① 在本机终端（沙箱外）用 yt-dlp 下载，再把文件路径填进同一个输入框\n"
+                f"     yt-dlp -f 'bv*[height<=1080][vcodec^=avc1]+ba/b' -o video.mp4 '{url}'\n"
+                f"  ② 或改用该内容在 B 站的版本（本环境能直连 B 站）")
+    if net_hint:
+        return (f"{s}\n\n"
+                f"【网络出口限制】当前环境访问不了 {host or '该站点'}。\n"
+                f"可以改用能直连的站点，或在本机下载后把文件路径填进输入框。")
+    return s
+
+
+def normalize_video_source(raw):
+    """校验并规范化输入源，返回 (kind, value, error)。
+
+    kind = "url"    → value 是规范化后的 http(s) 地址（yt-dlp 支持的站点都行）
+    kind = "local" → value 是本地视频文件的绝对路径
+    error 非空表示不合法。
+
+    ★ 为什么不再只认 B 站：yt-dlp 本身支持 YouTube / Vimeo / Twitter 等几十个站点，
+      把校验写死成 bilibili.com 等于把工具锁死在一个平台上。
+      同时支持本地文件路径 —— 有些源在当前网络出口取不到（见 download_video 的
+      网络受限提示），这时在本机下载好再指路径最省事。
     """
     if not raw or not raw.strip():
-        return None, "请填写 B 站视频地址"
-    url = raw.strip()
-    if not re.match(r"^https?://", url):
-        url = "https://" + url
-    if not re.match(r"^https?://(www\.|m\.)?bilibili\.com/video/", url):
+        return None, None, "请填写视频地址，或本地视频文件的路径"
+    s = raw.strip()
+    # 本地文件
+    if s.startswith("file://"):
+        s = s[7:]
+    if s.startswith("/") or s.startswith("~"):
+        p = os.path.abspath(os.path.expanduser(s))
+        if not os.path.exists(p):
+            return None, None, f"本地文件不存在：{p}"
+        if not os.path.isfile(p):
+            return None, None, f"不是文件（要视频文件，不要目录）：{p}"
+        if os.path.getsize(p) < 1024:
+            return None, None, f"文件太小，可能不是视频：{p}"
+        return "local", p, None
+    # 省略协议头的 B 站短链（BVxxxx）
+    if re.match(r"^BV[0-9A-Za-z]{8,}$", s):
+        s = "https://www.bilibili.com/video/" + s
+    if not re.match(r"^https?://", s):
+        s = "https://" + s
+    # 主机名必须像域名（含点 + 顶级域），否则多半是乱输入
+    if not re.match(r"^https?://[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2,}([:/?#]|$)", s):
+        return None, None, ("地址格式不对（应形如 "
+                            "https://www.youtube.com/watch?v=... 或 https://www.bilibili.com/video/BVxxxx）")
+    return "url", s, None
+
+
+def normalize_bilibili_url(raw):
+    """兼容旧接口：只接受 B 站地址（已由 normalize_video_source 泛化）。"""
+    kind, value, err = normalize_video_source(raw)
+    if err:
+        return None, err
+    if kind != "url":
+        return None, "请填写 B 站视频页地址"
+    if not re.match(r"^https?://(www\.|m\.)?bilibili\.com/video/", value):
         return None, ("请填写合法的 B 站视频页地址"
                       "（形如 https://www.bilibili.com/video/BVxxxx，可省略 https:// 前缀）")
-    return url, None
+    return value, None
 
 
 def run_video_to_script(cfg, tid, setp, log):
@@ -52,7 +115,7 @@ def run_video_to_script(cfg, tid, setp, log):
     out_dir = os.path.join(cfg["outputs_dir"], f"课件_{tid}")
     os.makedirs(out_dir, exist_ok=True)
 
-    url, err = normalize_bilibili_url(params.get("url", ""))
+    kind, url, err = normalize_video_source(params.get("url", ""))
     if err:
         raise ValueError(err)
 
@@ -61,43 +124,50 @@ def run_video_to_script(cfg, tid, setp, log):
     dl_dir = os.path.join(task_dir, "video")
     os.makedirs(dl_dir, exist_ok=True)
     t0 = time.time()
-    try:
-        ops.download_video(cfg, url, os.path.join(dl_dir, "v.%(ext)s"),
-                          "bv*[height<=1080][vcodec^=avc1]", log=log, timeout=1800,
-                          progress_cb=lambda f: jobs.stage_progress(
-                              cfg, tid, "download", "下载视频", f))
-    except Exception as e:
-        raise RuntimeError(f"视频下载失败（yt-dlp）：{e}")
-    vids = [os.path.join(dl_dir, f) for f in os.listdir(dl_dir)
-            if f.startswith("v.") and f.endswith((".mp4", ".mkv", ".webm", ".flv"))]
-    if not vids:
-        raise RuntimeError("视频下载完成但未找到视频流文件")
-    vstream = max(vids, key=os.path.getsize)
-
-    # 音轨单独下（与视频流合并，确保有声音供 ASR）
-    try:
-        ops.download_video(cfg, url, os.path.join(dl_dir, "a.%(ext)s"),
-                          "ba/b", log=log, timeout=900)
-    except Exception as e:
-        log(f"  音轨单独下载失败（{e}），尝试用视频内嵌音轨")
-    auds = [os.path.join(dl_dir, f) for f in os.listdir(dl_dir)
-            if f.startswith("a.") and f.endswith((".m4a", ".mp3", ".aac", ".m4s"))]
-    video = vstream
-    if auds:
-        audio = max(auds, key=os.path.getsize)
-        merged = os.path.join(dl_dir, "merged.mp4")
+    if kind == "local":
+        # 本地视频文件：直接用，不下载也不复制（复制会占双份空间，
+        # 且清理逻辑会把它当成中间产物删掉 —— 原文件必须在 work/ 之外）
+        video = url
+        log(f"  使用本地视频 {video} "
+            f"{os.path.getsize(video)/1e6:.1f}MB（不下载）")
+    else:
         try:
-            ops.run_cmd(cfg, [cfg["ffmpeg"], "-y", "-hide_banner", "-v", "error",
-                              "-i", vstream, "-i", audio,
-                              "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
-                        log=log)
-            if os.path.exists(merged) and os.path.getsize(merged) > 0:
-                video = merged
-                log("  音视频已合并")
+            ops.download_video(cfg, url, os.path.join(dl_dir, "v.%(ext)s"),
+                              "bv*[height<=1080][vcodec^=avc1]", log=log, timeout=1800,
+                              progress_cb=lambda f: jobs.stage_progress(
+                                  cfg, tid, "download", "下载视频", f))
         except Exception as e:
-            log(f"  合并失败（{e}），使用视频内嵌音轨")
-    log(f"  视频就绪 {os.path.basename(video)} "
-        f"{os.path.getsize(video)/1e6:.1f}MB {time.time()-t0:.1f}s")
+            raise RuntimeError(f"视频下载失败（yt-dlp）：{_download_hint(url, e)}")
+        vids = [os.path.join(dl_dir, f) for f in os.listdir(dl_dir)
+                if f.startswith("v.") and f.endswith((".mp4", ".mkv", ".webm", ".flv"))]
+        if not vids:
+            raise RuntimeError("视频下载完成但未找到视频流文件")
+        vstream = max(vids, key=os.path.getsize)
+
+        # 音轨单独下（与视频流合并，确保有声音供 ASR）
+        try:
+            ops.download_video(cfg, url, os.path.join(dl_dir, "a.%(ext)s"),
+                              "ba/b", log=log, timeout=900)
+        except Exception as e:
+            log(f"  音轨单独下载失败（{e}），尝试用视频内嵌音轨")
+        auds = [os.path.join(dl_dir, f) for f in os.listdir(dl_dir)
+                if f.startswith("a.") and f.endswith((".m4a", ".mp3", ".aac", ".m4s"))]
+        video = vstream
+        if auds:
+            audio = max(auds, key=os.path.getsize)
+            merged = os.path.join(dl_dir, "merged.mp4")
+            try:
+                ops.run_cmd(cfg, [cfg["ffmpeg"], "-y", "-hide_banner", "-v", "error",
+                                  "-i", vstream, "-i", audio,
+                                  "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
+                            log=log)
+                if os.path.exists(merged) and os.path.getsize(merged) > 0:
+                    video = merged
+                    log("  音视频已合并")
+            except Exception as e:
+                log(f"  合并失败（{e}），使用视频内嵌音轨")
+        log(f"  视频就绪 {os.path.basename(video)} "
+            f"{os.path.getsize(video)/1e6:.1f}MB {time.time()-t0:.1f}s")
     setp(progress_note=f"视频 {os.path.getsize(video)/1e6:.0f}MB")
 
     dur = ops.ffprobe_duration(cfg, video)

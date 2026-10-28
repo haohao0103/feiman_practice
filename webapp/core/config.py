@@ -16,22 +16,62 @@ WEB = os.path.join(ROOT, "webapp")
 CONFIG_JSON = os.path.join(WEB, "config.json")
 
 
-def _tool(env_name, *candidates):
-    """外部工具定位：环境变量 > PATH > 已知安装位置。
+# 解释器能力校验缓存：{(interpreter, module): bool}
+_MODULE_CACHE = {}
 
-    目的是让仓库在别的机器上也能跑（不写死某台机器的路径）。
+
+def _tool(env_name, *candidates, prefer="path", require_module=None):
+    """外部工具定位。
+
+    prefer="path"   → 环境变量 > PATH > 已知安装位置（ffmpeg / yt-dlp 这类独立工具）
+    prefer="known"  → 环境变量 > 已知安装位置 > PATH（**解释器必须这样**）
+
+    ★ 为什么解释器不能 PATH 优先：PATH 里的 python3 未必装了项目需要的包。
+      实测踩过：PATH 的 python3 没有 faster_whisper，而 ASR 用它跑 → 直接 rc=1 失败。
+      所以解释器一律"已知安装位置优先"，并且用 require_module 做能力校验，
+      选一个真能 import 到目标模块的。
+
+    require_module：给定则只接受能 import 该模块的解释器。
     """
     v = os.environ.get(env_name)
-    if v:
+    if v and (not require_module or _has_module(v, require_module)):
         return v
-    for name in candidates:
-        p = shutil.which(name)
-        if p:
-            return p
-    for c in candidates:
+    cands = list(candidates)
+    if prefer == "path":
+        found = [shutil.which(c) for c in cands]
+        cands = [p for p in found if p] + [c for c in cands if not os.path.isabs(c)]
+    for c in cands:
+        if not c:
+            continue
+        p = c if os.path.isabs(c) else (shutil.which(c) or c)
+        if not os.path.exists(p):
+            continue
+        if require_module and not _has_module(p, require_module):
+            continue
+        return p
+    # 都没命中：退回第一个可用候选（报错时提示用）
+    for c in cands:
         if c and os.path.exists(c):
             return c
-    return candidates[0] if candidates else ""
+    return cands[0] if cands else ""
+
+
+def _has_module(interpreter, module):
+    """解释器能否 import 某个模块（带缓存，避免每次都起进程）。"""
+    if not interpreter or not os.path.exists(interpreter):
+        return False
+    key = (interpreter, module)
+    if key in _MODULE_CACHE:
+        return _MODULE_CACHE[key]
+    try:
+        import subprocess
+        r = subprocess.run([interpreter, "-c", f"import {module}"],
+                           capture_output=True, timeout=60)
+        ok = (r.returncode == 0)
+    except Exception:
+        ok = False
+    _MODULE_CACHE[key] = ok
+    return ok
 
 
 DEFAULTS = {
@@ -49,9 +89,14 @@ DEFAULTS = {
                     "python3.14/site-packages/imageio_ffmpeg/binaries/ffmpeg-macos-x86_64-v7.1"),
     "yt_dlp": _tool("FEIMAN_YTDLP", "yt-dlp",
                     "/Users/mac/.workbuddy/binaries/python/envs/default/bin/yt-dlp"),
-    "python_asr": _tool("FEIMAN_PYTHON_ASR", "python3",
-                        "/Users/mac/.workbuddy/binaries/python/envs/default/bin/python3"),
-    "python_main": _tool("FEIMAN_PYTHON", "python3", sys.executable),
+    # ★ 解释器：已知安装位置优先，且必须真的能 import faster_whisper
+    #   （PATH 的 python3 通常没装这个包，用它跑 ASR 会直接 rc=1）
+    "python_asr": _tool("FEIMAN_PYTHON_ASR",
+                        "/Users/mac/.workbuddy/binaries/python/envs/default/bin/python3",
+                        "python3", prefer="known", require_module="faster_whisper"),
+    "python_main": _tool("FEIMAN_PYTHON",
+                         "/Users/mac/.workbuddy/binaries/python/envs/default/bin/python3",
+                         sys.executable, prefer="known", require_module="numpy"),
 
     # ASR（本地离线）
     "asr_model": "small",          # tiny/base/small/medium/large-v3

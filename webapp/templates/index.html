@@ -104,13 +104,17 @@ pre{background:#f9fafb;border:1px solid var(--line);border-radius:8px;padding:14
   <!-- ============ 能力 A ============ -->
   <section id="tab-a">
     <div class="card">
-      <h2>B 站视频 → 风格化逐字稿</h2>
-      <div class="desc">填入 B 站视频页地址，系统会下载视频、离线转写、抽取原视频画面，
-        生成忠实逐字稿，再按指定风格改写成你用来录制的讲课稿。</div>
+      <h2>视频 → 风格化逐字稿</h2>
+      <div class="desc">填入视频页地址（B 站 / YouTube / Vimeo 等 yt-dlp 支持的站点），
+        系统会下载视频、离线转写、抽取原视频画面，生成忠实逐字稿，再按指定风格改写成你用来录制的讲课稿。</div>
 
-      <label>视频地址</label>
+      <label>视频地址（或本地视频文件路径）</label>
       <input type="text" id="a_url" placeholder="https://www.bilibili.com/video/BV1rXXfBiECa/">
-      <div class="hint">支持单个视频（非合集、非分P）。下载 1080p 优先。</div>
+      <div class="hint">
+        支持单个视频（非合集、非分P），下载 1080p 优先。<br>
+        <b>也可以直接填本地文件路径</b>（如 <code>/Users/mac/Desktop/x.mp4</code>）——
+        适合当前网络取不到的源：先在本机下载好，再把路径粘进来。
+      </div>
 
       <div class="row">
         <div>

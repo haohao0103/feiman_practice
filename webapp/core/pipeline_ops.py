@@ -210,9 +210,14 @@ def run_asr(cfg, wav, out_txt, log=None, workdir=None, progress_cb=None):
 
 
 def download_video(cfg, url, out_tmpl, fmt, log=None, timeout=1800, progress_cb=None):
-    """下载视频并上报进度（解析 yt-dlp 的 [download] X% 行）。"""
+    """下载视频并上报进度（解析 yt-dlp 的 [download] X% 行）。
+
+    ★ 失败时把 yt-dlp 的原始输出尾部带进异常 message —— 否则上层只拿到
+      "rc=1"，既看不出是网络受限还是格式不支持，也没法给出可执行的建议。
+    """
     cmd = [cfg["yt_dlp"], "--newline", "-f", fmt, "-o", out_tmpl, url]
     t0 = time.time()
+    tail = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, errors="replace", bufsize=1)
     last_p = -1.0
@@ -228,13 +233,18 @@ def download_video(cfg, url, out_tmpl, fmt, log=None, timeout=1800, progress_cb=
                         last_p = p
                 except ValueError:
                     pass
-            elif log and ("Destination" in line or "ERROR" in line):
-                log(f"  yt-dlp: {line}")
+            elif line:
+                tail.append(line)
+                if len(tail) > 40:
+                    tail.pop(0)
+                if log and ("Destination" in line or "ERROR" in line):
+                    log(f"  yt-dlp: {line}")
     rc = proc.wait(timeout=timeout)
     if log:
         log(f"  下载完成 rc={rc} {time.time()-t0:.1f}s")
     if rc != 0:
-        raise RuntimeError(f"视频下载失败（yt-dlp rc={rc}）")
+        detail = "\n".join(tail[-12:]) if tail else "(无输出)"
+        raise RuntimeError(f"视频下载失败（yt-dlp rc={rc}）\n{detail}")
     return rc
 
 
