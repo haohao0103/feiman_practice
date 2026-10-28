@@ -12,6 +12,8 @@
 | `test_doc_courseware.py` | 文档 → 标杆级课件（无头）：`python3 scripts/test_doc_courseware.py <文档> [风格] [强度]` |
 | `test_rehearsal_alignment.py` | 课件 ↔ 试讲 逐段对账 → 掌握度 + 对账报告 + 改进稿 |
 | `test_practice_loop.py` | 多轮对账归档 → 掌握度趋势 → 跨轮薄弱段 → 趋势图 |
+| `cleanup_work.py` | **work/ 暂存区清理**（默认试运行）：`--apply` 真删 / `--status` 看占用 / `--keep-days` `--max-gb` 调参 |
+| `test_cleanup.py` | 清理逻辑安全属性测试（沙盒内跑，不碰真实 work/） |
 
 ## 二、质检与测试
 
@@ -48,5 +50,6 @@
 | 术语/口头禅/类比/提问/行动指令的识别词 | `lexicon.json` |
 | 时长承诺、行动指令条数、提问处数、类比数、术语解释红线 | `check_script_quality.py` 的 `TARGETS` |
 | 讲法风格（张雪峰式 / 标杆·忠实结构化 / 极简理性 / 故事化） | `webapp/core/styles.py` 的 `PRESETS` |
+| 清理策略（保留天数 / 水位线 / 触发间隔） | `webapp/core/config.py` 的 `cleanup` 段（可用 `webapp/config.json` 覆盖） |
 | 画面去重阈值 | `webapp/core/config.py` 的 `frame_dedupe_th`（标定依据见 `analyze_frame_diversity.py`） |
 | 单期目标时长 | `webapp/core/config.py` 的 `script_target_min/max` + `check_script_quality.py` 的 `TARGETS`（两处要同步） |

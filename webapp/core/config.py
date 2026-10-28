@@ -60,6 +60,15 @@ DEFAULTS = {
     "asr_beam_size": 1,
     "hf_endpoint": "https://hf-mirror.com",
 
+    # work/ 暂存区清理（见 webapp/core/cleanup.py）
+    # 上传的录屏（~760M）+ 抽帧（~1100 张/任务）会持续堆积，实测三天到 6.5G。
+    "cleanup": {
+        "enabled": True,
+        "keep_days": 7,         # 任务目录里的大件保留天数（超龄才删）
+        "max_work_gb": 8,       # work/ 总量水位线（超了从最老任务整目录删）
+        "interval_hours": 6,    # 自动触发间隔（服务启动 + 任务收尾时检查）
+    },
+
     # LLM（OpenAI 兼容协议；小米 MiMo / DeepSeek / OpenAI 等通用）
     # 唯一规则：有小米（双通道 ch1/ch2 任一可达）→ 用小米；无小米 → 直接报错，绝不静默降级。
     "llm_base_url": os.environ.get("LLM_BASE_URL", ""),
@@ -133,6 +142,11 @@ def load():
             v = os.environ[env_key]
             cfg[k] = int(v) if k in ("style_intensity", "script_target_min",
                                      "script_target_max", "script_speed_cpm") else v
+    # 嵌套段（cleanup）做浅合并，避免 config.json 只写一个键就把默认全冲掉
+    for _sec in ("cleanup",):
+        merged = dict(DEFAULTS.get(_sec, {}))
+        merged.update(cfg.get(_sec) or {})
+        cfg[_sec] = merged
     for d in (cfg["work_dir"], cfg["uploads_dir"], cfg["projects_dir"],
               cfg["outputs_dir"], cfg["logs_dir"], cfg["models_dir"]):
         os.makedirs(d, exist_ok=True)

@@ -8,5 +8,13 @@
   "llm2_model": "mimo-v2.6-pro",
   "llm_timeout": 180,
   "llm_max_tokens": 8000,
-  "llm_temperature": 0.7
+  "llm_temperature": 0.7,
+
+  "_cleanup_说明": "work/ 暂存区自动清理（上传的录屏+抽帧会持续堆积，实测三天到 6.5G）",
+  "cleanup": {
+    "enabled": true,
+    "keep_days": 7,
+    "max_work_gb": 8,
+    "interval_hours": 6
+  }
 }

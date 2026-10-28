@@ -33,6 +33,27 @@ app = FastAPI(title="讲课稿工作台", version="1.0")
 app.mount("/static", StaticFiles(directory=os.path.join(WEB, "static")), name="static")
 
 
+@app.on_event("startup")
+def _cleanup_on_startup():
+    """服务启动时顺手清理 work/ 暂存区（录屏 + 抽帧中间产物堆积很快）。
+
+    低频触发：距上次清理不足 cleanup.interval_hours 就不做。
+    """
+    try:
+        from webapp.core import cleanup as cl
+        st = cl.maybe_run(cfg)
+        if st:
+            print(f"[cleanup] 启动清理：释放 "
+                  f"{st['freed_bytes']/1073741824:.2f}GB，work/ 现 "
+                  f"{st['total_bytes_after']/1073741824:.2f}GB", flush=True)
+        else:
+            s = cl.status(cfg)
+            print(f"[cleanup] work/ 占用 {s['work_gb']}GB（水位线 {s['max_gb']}GB）",
+                  flush=True)
+    except Exception as e:
+        print(f"[cleanup] 启动清理跳过：{e}", flush=True)
+
+
 class ScriptReq(BaseModel):
     url: str
     style: str = "zhangxuefeng"

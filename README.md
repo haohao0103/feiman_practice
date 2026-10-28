@@ -113,6 +113,7 @@ docs/                    # 设计决策与踩坑记录
 | **质量闸门在写盘前跑** | 不达标（截断/行动指令不足/提问不足）→ 顶层横幅 + 日志报警 + Web 红条，不许静默出稿 |
 | **逐段对账要看原句** | 「你说的」必须带转写原句依据，禁止泛泛而评 |
 | **只补缺的那一节，不重写全稿** | 外科式修补（`repair_missing`）：重写会毁掉其它已达标项 |
+| **work/ 暂存区自动清理** | 上传的录屏（~760M）+ 抽帧（~1100 张/任务）会持续堆积，实测三天到 6.5G。清理分三层：任务级瘦身（删可重建的大件，留 ASR 缓存）→ 水位线（超 8GB 从最老任务整目录删）→ 残留清扫 |
 | **临时文件一律放 `work/`，且用少量固定文件** | 交付目录里单次批量删除 >50 文件会被安全钩子拦截 → 后台进程永久卡死（详见 docs） |
 
 ---
@@ -138,6 +139,47 @@ python3 scripts/test_frame_extract_cleanup.py    # 抽帧清理 + 临时目录�
 python3 scripts/calibrate_delete_hook.py         # safe-delete 钩子标定
 python3 scripts/analyze_frame_diversity.py       # 画面相似度分布（阈值标定依据）
 ```
+
+---
+
+## 磁盘管理（work/ 暂存区自动清理）
+
+上传录屏（~760M）+ 抽帧（~1100 张 jpg/任务）会持续堆积，**实测三天就占 6.5G**。
+所以清理是自动的，不需要记得手动删。
+
+```bash
+# 只看会删什么（默认就是试运行，不会动手）
+python3 scripts/cleanup_work.py --dry-run
+
+# 真删
+python3 scripts/cleanup_work.py --apply
+
+# 自定义保留期与水位线
+python3 scripts/cleanup_work.py --apply --keep-days 3 --max-gb 4
+
+# 只看占用
+python3 scripts/cleanup_work.py --status
+```
+
+**三层策略**（`webapp/core/cleanup.py`）：
+
+| 层 | 做什么 | 保留什么 |
+|---|---|---|
+| 任务级瘦身 | 删任务目录里可重建的大件：`frames_raw/` `video/` `audio.wav` `*.m4a` | **`asr.txt`（重跑评估的缓存）**、稿件、json |
+| 水位线 | work/ 总量超 `max_work_gb`（默认 8G）→ 从**最老**的任务整目录删 | 删除前先把这题的 `asr.txt` 挪进 `work/asr_cache/` |
+| 残留清扫 | 临时调试目录（`_` 前缀）、旧管线遗留的固定名帧目录 | 过了 1 天的才删（避免打断正在跑的任务） |
+
+**自动触发**：服务启动时 + 每次任务完成后（`jobs._run()` 收尾单点），间隔由
+`cleanup.interval_hours`（默认 6 小时）控制。正在跑的任务目录会被**保护**，不会被清掉。
+
+配置在 `webapp/config.json`：
+
+```json
+"cleanup": { "enabled": true, "keep_days": 7, "max_work_gb": 8, "interval_hours": 6 }
+```
+
+> ⚠️ **绝不删 `outputs/`**：安全钩子会拦「交付目录内单次批量删 >50 文件」，
+> 后台进程拿不到人工确认 → 永久卡死（不是报错，是挂住）。清理逻辑只动 `work/`。
 
 ---
 

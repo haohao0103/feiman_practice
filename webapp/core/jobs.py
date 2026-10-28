@@ -225,6 +225,21 @@ def _run(cfg, tid):
         _set(cfg, tid, status="done", stage=None, stage_label="完成",
              progress=1.0, result=result or {}, finished_at=_now())
         _log(cfg, tid, "任务完成")
+        # 任务收尾时顺手清理 work/ 暂存区（低频触发，见 webapp/core/cleanup.py）。
+        # 放在这里而不是各 runner 里 —— 这是所有任务唯一的收尾单点。
+        try:
+            from . import cleanup as cl
+            cl.protect([task_dir])
+            try:
+                st = cl.maybe_run(cfg, log=lambda m: _log(cfg, tid, m))
+            finally:
+                cl.unprotect([task_dir])   # 成对解除，否则这个目录永远清不掉
+            if st:
+                _log(cfg, tid, f"暂存区清理：释放 "
+                               f"{st['freed_bytes']/1048576:.0f}MB，"
+                               f"work/ 现 {st['total_bytes_after']/1073741824:.2f}GB")
+        except Exception as e:
+            _log(cfg, tid, f"暂存区清理跳过（不影响任务结果）：{e}")
     except Exception as e:
         tb = traceback.format_exc()
         _set(cfg, tid, status="failed", stage_label="失败", error=str(e),
