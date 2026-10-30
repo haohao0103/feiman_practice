@@ -899,7 +899,15 @@ def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections
 
 
 def quality_gate(cfg, script, truncated=False):
-    """质量闸门：返回 (自检字典, 不合格项列表[])。不合格必须显式报出。"""
+    """质量闸门：返回 (自检字典, 不合格项列表[])。不合格必须显式报出。
+
+    硬指标（红线）：
+      - 成稿完整（没被 max_tokens 截断）
+      - 行动指令 ≥ 3
+      - 检验提问 ≥ 3
+      - 正文 ≥ 1500 字
+      - **未当场解释的术语 = 0**（费曼法核心：讲不清就是没懂）
+    """
     try:
         checks = ops.self_check(cfg, script)
     except Exception:
@@ -913,15 +921,23 @@ def quality_gate(cfg, script, truncated=False):
         gate.append(f"检验提问仅 {checks.get('check_questions', 0)} 处（要求 ≥3）")
     if checks.get("body_cn_chars", 0) < 1500:
         gate.append(f"正文仅 {checks.get('body_cn_chars', 0)} 字（过短，疑似生成不全）")
+    n_unexp = checks.get("unexplained_terms", 0)
+    if n_unexp:
+        terms = "、".join((checks.get("unexplained_detail") or [])[:5])
+        gate.append(f"{n_unexp} 个术语未当场解释（要求 0）：{terms}")
     return checks, gate
 
 
 _REPAIR_SYS = """你是讲课稿编辑。基于给定讲稿正文，**只补写缺失的那一节**，其余内容一个字都不要改。
 
 补写「课后可执行动作清单」时：
-- 标题固定写成 `## 【课后可执行动作清单】`
-- 3~5 条，每条一行，格式：`- 【动作】具体做什么（对象 + 动作 + 完成判定）`
-- 动作必须真的能执行（打开某个软件/画图/标注/复盘/数一下/对照标准），不许写「好好复习」这种空话
+- 标题写成 `## 【课后可执行动作清单】`
+- 3~5 条，**每条写成正文里能念出口的一句话**（例："现在请你打开 TradingView，
+  把今天的例2 双顶标出来，看高点有没有被跌破。"）
+- ★ **不要用 "- " 开头的列表项** —— 列表项是舞台提示、不算口播内容，
+  自检工具统计不到，等于白写
+- 动作必须真的能执行（打开某个软件/画图/标注/复盘/数一下/对照标准），
+  不许写「好好复习」这种空话
 - 必须紧扣这一节讲的内容，用讲稿里出现过的具体案例/图表/术语
 
 只输出这一节的 markdown，不要任何解释。"""
@@ -958,6 +974,85 @@ def repair_missing(cfg, script, checks, log=None):
     if log:
         log(f"  修补：补写「{'、'.join(need)}」{len(patch)} 字")
     return new_script, need
+
+
+_TERM_FIX_SYS = """你是讲课稿编辑。给你若干个专业术语和它们在讲稿里首次出现的上下文，
+请为**每一个**术语写一句**当场就能念出来的大白话解释**。
+
+要求：
+- 每个术语一句话，不超过 40 字
+- 必须用「就是…」「意思是…」「指的是…」「你可以理解为…」这种说法开头
+  （自检工具靠这些标记判断"当场解释过"）
+- 用外行听得懂的话，不要用另一个术语解释术语
+- 严格按给定的术语顺序输出，不要增删术语
+
+只输出 JSON，格式：{"terms": ["术语1", "术语2"], "explains": ["解释1", "解释2"]}"""
+
+
+def repair_unexplained_terms(cfg, script, checks, log=None):
+    """术语未当场解释 → 在**首次出现处**插入一句通俗解释（外科式，不重写全稿）。
+
+    返回 (新脚本, 修补说明)。插入位置：该术语所在句子的句末。
+    """
+    terms = checks.get("unexplained_detail") or []
+    if not terms:
+        return script, []
+    # 定位：必须用**正文口径**（body_of 跳过表格），否则会命中目录表里的同名词 →
+    # 解释插进目录，检查时正文里那个位置仍判未解释（插了等于没插）。
+    _q = ops.load_quality_module()
+    _body, _kept = _q.body_with_map(script)
+    items = []
+    for t in terms:
+        off = _q.term_first_occurrence_in_body(script, t)
+        if off is None:
+            continue
+        s = script.rfind("\n", 0, off) + 1
+        e = script.find("\n", off)
+        e = e if e > 0 else len(script)
+        items.append({"term": t, "ctx": script[s:e][:160], "off": off})
+    if not items:
+        return script, []
+    user = ("请为下列术语各写一句大白话解释：\n"
+            + "\n".join(f"{k+1}. {it['term']}（上下文：{it['ctx']}）"
+                        for k, it in enumerate(items)))
+    raw = ops.call_llm(cfg, _TERM_FIX_SYS, user, log=log)
+    if not raw:
+        return script, []
+    try:
+        import json as _json
+        data = _json.loads(ops.extract_markdown(raw).strip()
+                           .replace("```json", "").replace("```", "").strip())
+        explains = data.get("explains") or []
+    except Exception as e:
+        if log:
+            log(f"  术语修补解析失败（{e}），跳过")
+        return script, []
+    if len(explains) != len(items):
+        if log:
+            log(f"  术语修补数量不匹配（{len(explains)}/{len(items)}），跳过")
+        return script, []
+    # 插到每个术语首次出现所在句子的句末（从后往前插，避免位移）
+    out = script
+    for it, exp in sorted(zip(items, explains),
+                           key=lambda x: x[0].get("off", 0), reverse=True):
+        i = out.find(it["term"], it.get("off", 0))
+        if i < 0:
+            continue
+        # 插入点：优先**句末标点**（在同一行内）；没有标点就插到该行行末。
+        # ★ 不能按换行插到下一行 —— 那会把解释落到下一段/标题后面，
+        #   而闸门按「术语所在段」判定作用域 → 解释在别的段 = 判未解释（实测漏修）。
+        line_end = out.find("\n", i)
+        line_end = line_end if line_end > 0 else len(out)
+        m = re.search(r"[。！？]", out[i:line_end])
+        if m:
+            pos = i + m.end()
+        else:
+            pos = line_end
+        ins = f"（{exp.strip()}）"
+        out = out[:pos] + ins + out[pos:]
+    if log:
+        log(f"  修补：{len(items)} 个术语补上当场解释")
+    return out, [it["term"] for it in items]
 
 
 def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
@@ -1041,19 +1136,29 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     checks, gate = quality_gate(cfg, script, truncated)
     repaired = []
     if gate:
-        # 外科式修补：只补缺的那一节（行动指令/检验提问），不重写全稿
-        script2, repaired = repair_missing(cfg, script, checks, log=log)
-        if script2 != script:
-            checks2, gate2 = quality_gate(cfg, script2, truncated)
-            if len(gate2) < len(gate):
-                script, checks, gate = script2, checks2, gate2
+        # 外科式修补 A：术语未当场解释 → 在首次出现处插一句大白话
+        if checks.get("unexplained_terms", 0):
+            s3, r3 = repair_unexplained_terms(cfg, script, checks, log=log)
+            if s3 != script:
+                c3, g3 = quality_gate(cfg, s3, truncated)
+                script, checks, gate = s3, c3, g3
+                repaired += [f"术语解释×{len(r3)}"]
+        # 外科式修补 B：只补缺的那一节（行动指令/检验提问），不重写全稿
+        if gate:
+            script2, repaired2 = repair_missing(cfg, script, checks, log=log)
+            if script2 != script:
+                checks2, gate2 = quality_gate(cfg, script2, truncated)
+                if len(gate2) < len(gate):
+                    script, checks, gate = script2, checks2, gate2
+                repaired += repaired2
     _st("self_check", "稿子自检", 1.0)
 
     _st("assemble", "组装与PDF", 0.0)
     md = assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections, meta, log=log)
     if gate:
         log("  ⚠ 质量闸门未通过：" + "；".join(gate))
-        banner = ("> ⚠ **本稿未通过质量闸门**：" + "；".join(gate)
+        # ★ 横幅里不要用 ⚠ 符号：PingFang SC 没有该字形，PDF 里会渲染成方块
+        banner = ("> **【质量提醒】本稿未通过质量闸门**：" + "；".join(gate)
                   + "\n> 请先补齐上述项再录制（详见文末「附四 · 成稿自检」）。\n")
         lines = md.split("\n")
         md = "\n".join(lines[:2] + [banner] + lines[2:])

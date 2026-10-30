@@ -104,8 +104,80 @@ def list_practices(cfg):
 
 
 # ============================================================ 归档
+def _bigram_jac(a, b):
+    """字符 bigram 的 Jaccard 相似度（衡量两个项目名像不像同一门课）。"""
+    def grams(s):
+        s = re.sub(r"[^\w一-鿿]", "", s or "")
+        return set(s[i:i + 2] for i in range(max(1, len(s) - 1)))
+    ga, gb = grams(a), grams(b)
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
+
+def list_practice_keys(cfg):
+    """已有练习项目的 key 列表（**原始 key**，不是文件名）。
+
+    文件名是 key 经 _safe_name() 消毒后的（"·" → "_"），拿文件名去比相似度
+    会和原始 key 对不上 → 归组永远落空（实测：同名 key 都认不出来）。
+    """
+    d = practice_dir(cfg)
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, fn), encoding="utf-8") as f:
+                data = json.load(f)
+            k = data.get("key") or os.path.splitext(fn)[0]
+            out.append(k)
+        except Exception:
+            out.append(os.path.splitext(fn)[0])
+    return out
+
+
+def resolve_practice_key(cfg, raw_key):
+    """把算出来的 key 落到**已有项目**上 —— 标题微调不该让历史分数断档。
+
+    ★ 实测踩过：同一门课两次生成的课件标题会微调
+      （"反转的原理与识别步骤" → "反转的原理与基本步骤"），
+      而 key 取自课件标题 → 直接新建项目 → **历史分数断了，趋势从零开始**。
+
+    相似度阈值 0.60（实测：同课微调 0.647 / 同源大改 0.412 / 不同课 0.000）。
+    阈值偏保守是刻意的：把两门不同的课合并成一个项目（趋势图失真）
+    比断档（多练几轮就有趋势）更糟。
+    """
+    raw = (raw_key or "").strip()
+    if not raw:
+        return raw_key
+    existing = list_practice_keys(cfg)
+    if raw in existing:
+        return raw
+    best, score = None, 0.0
+    for k in existing:
+        s = _bigram_jac(raw, k)
+        if s > score:
+            best, score = k, s
+    if best and score >= 0.60:
+        try:
+            data = load_practice(cfg, best)
+            aliases = data.get("aliases") or []
+            if raw not in aliases:
+                aliases.append(raw)
+            data["aliases"] = aliases
+            data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            save_practice(cfg, data)
+        except Exception:
+            pass
+        return best
+    return raw
+
+
 def archive_round(cfg, key, round_data):
     """把一轮对账结果归档（同一 key 追加轮次）。返回更新后的项目数据。"""
+    key = resolve_practice_key(cfg, key)
     data = load_practice(cfg, key)
     rounds = data.get("rounds", [])
     rd = dict(round_data)
@@ -113,7 +185,7 @@ def archive_round(cfg, key, round_data):
     rd.setdefault("at", time.strftime("%Y-%m-%d %H:%M:%S"))
     rounds.append(rd)
     data["rounds"] = rounds
-    data["title"] = round_data.get("practice_title") or data.get("title") or key
+    data["title"] = data.get("title") or round_data.get("practice_title") or key
     data["threshold"] = round_data.get("threshold", data.get("threshold", DEFAULT_THRESHOLD))
     save_practice(cfg, data)
     return data

@@ -52,6 +52,10 @@ TERMS = ["遇阻", "极值", "极值点", "趋势线", "前高", "前低", "结�
          "回调", "反向K线", "深度回调", "三推", "双顶", "双底", "趋势"]
 # 讲者当场给了通俗解释的术语，不计入"未解释术语"（费曼法：讲得清就是懂的）
 EXPLAINED = ["结构支点", "遇阻", "极值点", "假突破", "三推"]
+# 讲者当场给出通俗解释的标记（术语后面出现即算"讲懂了"）
+EXPLAIN_MARKERS = ["就是", "意思是", "指的是", "相当于", "也就是",
+                    "换句话说", "通俗点", "说白了", "简单讲", "你看",
+                    "打个比方", "就好比", "发现"]
 ANALOGY = ["就像", "好比", "相当于", "好像", "打个比方", "你可以理解为",
            "比如说", "例如说", "想象", "就跟我", "这就跟", "像是",
            "你可以想成", "就好比说", "换个说法",
@@ -70,6 +74,40 @@ CHECK_Q = ["大家能不能", "能明白吗", "大家看", "听懂了吗", "有�
 ACTION = ["拿你自己", "复盘", "标一下", "去练", "试试", "做一遍", "作业",
           "对照着", "打开图", "截图", "下一期", "我们下期", "回去看",
           "自己画", "动手", "打开你自己", "你标", "去标"]
+# ★ 行动指令的**结构化判定**（纯字面词表会大量假阴性）：
+#   实测稿子里真实存在的行动指令 ——「打开 TradingView…标出来」「对照着图自己默念一次」
+#   「把流程再走一遍」—— 字面词表一个都匹配不上 → 闸门误报"行动指令仅 2 处"。
+#   规则：句子里有**动作动词**且有**指向观众/祈使**的词 → 算一处行动指令。
+ACTION_VERBS = ["打开", "切到", "调出", "标出", "标注", "标出来", "画出", "画一条", "画个",
+                "圈出", "找出", "找一", "数一", "数出", "算一", "检查", "对照", "回顾",
+                "复盘", "回看", "过一遍", "走一遍", "看一遍", "默念", "写下", "记录",
+                "截图", "练", "试试", "做一遍", "挑", "选", "翻"]
+IMPERATIVE_HINTS = ["请你", "请 ", "你现在", "你来", "大家", "咱们", "自己", "对着",
+                    "你可以", "你把", "你拿", "你标", "你记"]
+
+
+def count_action_instructions(body):
+    """数行动指令（让观众动手做的事）。
+
+    三条规则任一命中即算一处：
+      1) 句子里带【动作】/【行动指令】标记
+      2) 有动作动词 + 有指向观众/祈使的词
+      3) 命中旧字面词表（兼容）
+    同一句只算一处。
+    """
+    import re as _re
+    n = 0
+    for sent in _re.split(r"[。！？\n]", body):
+        s = sent.strip()
+        if not s:
+            continue
+        if ("【动作" in s or "【行动指令" in s
+                or any(k in s for k in ACTION)):
+            n += 1
+            continue
+        if any(v in s for v in ACTION_VERBS) and any(h in s for h in IMPERATIVE_HINTS):
+            n += 1
+    return n
 
 
 def log(m):
@@ -107,6 +145,108 @@ def body_of(text):
     return "\n".join(out)
 
 
+def split_sections(main_body):
+    """把正文按标题切成段，返回 [(段标题, 该段的口播正文)]。
+
+    ★ 每段正文用 body_of() 过滤（去表格行/图片行/引用块）——
+      否则**目录表**里的术语会被当成"首次出现"，实测误判：
+      目录里列了「突破趋势线」「高点上移」→ 全被判成未解释（10 个假阳性）。
+    兼容两种标题形态：「## 段 xxx」（旧逐字稿）与「## xxx / ### xxx」（现在的课件）。
+    """
+    out = []
+    cur = None
+    for ln in main_body.split("\n"):
+        if re.match(r"^#{2,3}\s", ln):
+            cur = [ln, []]
+            out.append(cur)
+        elif cur is None:
+            cur = ["", []]
+            out.append(cur)
+        else:
+            cur[1].append(ln)
+    return [(t, body_of("\n".join(lines))) for t, lines in out]
+
+
+def body_with_map(main_body):
+    """返回 (body, kept)：body 是 body_of 的结果；kept 是 [(该行正文, 该行在原文中的起始位置)]。
+
+    用途：把"正文里的字符位置"映射回"原文位置"——
+    修补术语解释时必须插到**正文**里那个位置（不是目录表里的同名词），
+    否则插了等于没插（闸门照样判未解释）。
+    """
+    kept = []
+    pos = 0
+    for l in main_body.split("\n"):
+        s = l.strip()
+        skip = False
+        if not s:
+            skip = True
+        elif s.startswith(("|", "#", "!", ">", "*", "-", "`", "---")):
+            skip = True
+        elif s.startswith("【画面"):
+            s2 = re.sub(r"`[^`]*`", "", s)
+            s2 = re.sub(r"【画面[^】]*】", "", s2).strip()
+            if not s2:
+                skip = True
+            else:
+                s = s2
+        if not skip:
+            kept.append((s, pos))
+        pos += len(l) + 1
+    return "\n".join(k[0] for k in kept), kept
+
+
+def term_first_occurrence_in_body(main_body, term):
+    """术语在**正文**（body_of 口径）里首次出现的位置，返回该行在原文中的起始偏移。
+    找不到返回 None。"""
+    body, kept = body_with_map(main_body)
+    idx = body.find(term)
+    if idx < 0:
+        return None
+    # 定位到是哪一行
+    acc = 0
+    for text, orig in kept:
+        if acc <= idx < acc + len(text):
+            return orig
+        acc += len(text) + 1
+    return None
+
+
+def find_unexplained_terms(body, sections=None, terms=None, explained=None):
+    """找出「讲了但没讲懂」的术语 —— 费曼法的真指标。
+
+    ★ **单一来源**：稿子自检、质量闸门、课件复审（audit_courseware）都用这个函数，
+      避免三处口径分叉（曾经分叉过：自检按段落作用域、复审按句子作用域）。
+
+    判定：某术语**首次出现**后，在**同一段内**若没有解释性标记（就是/意思是/指的是…），
+    就算"讲了但没讲懂"。按段落判定而不是按字符距离 —— 中间隔着动作提示行时，
+    解释往往在几百字后，按距离会误判。
+    """
+    terms = TERMS if terms is None else terms
+    explained = EXPLAINED if explained is None else explained
+    if sections is None:
+        sections = split_sections(body)
+    out = []
+    for term in terms:
+        if term in explained:
+            continue                      # 讲者当场解释过的，不算未解释
+        idx = body.find(term)
+        if idx < 0:
+            continue
+        scope = None
+        for title, text in sections:
+            if term in text:
+                scope = text
+                break
+        if scope is None:
+            scope = body[idx:idx + 400]
+        rel = scope.find(term)
+        window = scope[rel:]
+        if not any(k in window for k in EXPLAIN_MARKERS):
+            out.append({"term": term, "first_at": idx, "context": window[:60]})
+    return out
+
+
 def main():
     path = pick_script()
     if not path:
@@ -136,37 +276,10 @@ def main():
     counts["term_total_raw"] = counts["term_total"]
     counts["term_per_1000cn"] = round(counts["term_total"] / cn * 1000, 1) if cn else 0
 
-    # 未解释术语：某术语**首次出现**时，若其后 160 字内没有通俗解释，
+    # 未解释术语：某术语**首次出现**时，若其所在段内没有通俗解释，
     # 就算"讲了但没讲懂"。这是费曼法的真指标。
-    EXPLAIN_MARKERS = ["就是", "意思是", "指的是", "相当于", "也就是",
-                        "换句话说", "通俗点", "说白了", "简单讲", "你看",
-                        "打个比方", "就好比", "意思是", "发现"]
-    unexplained_list = []
-    # 按**段落**判断：某术语首次出现后，同一段内出现解释性标记即算当场解释。
-    # （按字符距离判断会误判：中间隔着动作提示行，解释往往在几百字后）
-    para_texts = [body_of(p) for p in main_body.split("\n## 段 ")[1:]]
-    for term in TERMS:
-        idx = body.find(term)
-        if idx < 0:
-            continue
-        # 定位到该术语所在的段
-        seg_text = None
-        for pt in para_texts:
-            if term in pt:
-                seg_text = pt
-                break
-        scope = seg_text if seg_text else body[idx:idx + 400]
-        rel = scope.find(term)
-        window = scope[rel:]
-        hit = False
-        for k in EXPLAIN_MARKERS:
-            m = window.find(k)
-            if m > 0:
-                hit = True
-                break
-        if not hit:
-            unexplained_list.append({"term": term, "first_at": idx,
-                                     "context": window[:60]})
+    # 实现见 find_unexplained_terms()（单一来源，自检/闸门/复审共用）
+    unexplained_list = find_unexplained_terms(body, split_sections(main_body))
     counts["unexplained_terms"] = len(unexplained_list)
     counts["unexplained_detail"] = unexplained_list
     counts["filler_per_1000cn"] = round(counts["filler_total"] / cn * 1000, 1) if cn else 0

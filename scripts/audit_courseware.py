@@ -33,7 +33,10 @@ def audit(md_path):
     with open(md_path, encoding="utf-8") as f:
         md = f.read()
     base = os.path.dirname(os.path.abspath(md_path))
-    body = csq.body_of(md)
+    # 正文范围：排除附录（与 self_check 同一套切法，见 pipeline_ops.self_check）
+    _m = re.search(r"^##\s*附", md, re.M)
+    main_body = md[:_m.start()] if _m else md
+    body = csq.body_of(main_body)
     cn = len(CN.findall(body))
     dur = cn / SPEED * 60
 
@@ -75,6 +78,10 @@ def audit(md_path):
                     break
             if not ok:
                 unexplained.append(t)
+    # ★ 口径统一：最终以 check_script_quality 的单一来源实现为准
+    #   （段内作用域 + EXPLAINED 白名单 + 同一组解释标记）
+    unexplained = [u["term"] for u in
+                   csq.find_unexplained_terms(body, csq.split_sections(main_body))]
 
     # 图片：引用数 / 文件是否存在 / 是否内嵌正文（而非全堆末尾）
     imgs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", md)

@@ -124,8 +124,14 @@ docs/                    # 设计决策与踩坑记录
 # 课件质量复审（复用 check_script_quality.py 的词表，同一口径）
 python3 scripts/audit_courseware.py <课件md>
 
+# ★ 闸门口径一致性：自检 / 闸门 / 复审 三处的判定必须一致（单一来源）
+python3 scripts/check_gate_consistency.py
+
 # 稿子自检（产出承诺值，供录后对账）
 python3 scripts/check_script_quality.py
+
+# 练习项目归组（标题微调不该让历史分数断档）
+python3 scripts/test_practice_grouping.py
 
 # 端到端
 python3 scripts/test_web_e2e.py        # 视频全链路（真实 HTTP）
@@ -139,6 +145,21 @@ python3 scripts/test_frame_extract_cleanup.py    # 抽帧清理 + 临时目录�
 python3 scripts/calibrate_delete_hook.py         # safe-delete 钩子标定
 python3 scripts/analyze_frame_diversity.py       # 画面相似度分布（阈值标定依据）
 ```
+
+### 质量闸门：不合格不许静默出稿
+
+成稿写盘/出 PDF **之前**跑闸门，不过就在文件顶部插横幅 + 日志报警 + Web 红条：
+
+| 硬指标 | 阈值 | 不达标怎么办 |
+|---|---|---|
+| 成稿完整性 | 末尾是完整句 | 换大预算重试一次（`script_max_tokens`） |
+| 行动指令 | ≥ 3 处 | 外科式修补：只补"动作清单"那一节 |
+| 检验提问 | ≥ 3 处 | 同上 |
+| 正文长度 | ≥ 1500 字 | 换大预算重试 |
+| **未当场解释的术语** | **= 0** | 外科式修补：在术语首次出现处插一句大白话 |
+
+修补是**外科式**的：只补缺的那一块，不重写全稿（重写会毁掉其它已达标项）。
+详见 `docs/设计决策与红线.md` 第 16 节。
 
 ---
 

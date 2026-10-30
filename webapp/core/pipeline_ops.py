@@ -21,6 +21,9 @@ import time
 from . import config as cfgmod
 from . import styles
 
+# 仓库根目录（由文件位置推导，避免硬编码本机路径）
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 def extract_markdown(text):
     """从 LLM 返回里抽出 ```markdown ... ``` 块，没有就原样返回。"""
@@ -742,6 +745,16 @@ def assemble_script_md(title, meta_rows, segments, assets_by_key,
     return "\n".join(L)
 
 
+def load_quality_module():
+    """加载 scripts/check_script_quality.py（口径单一来源）。"""
+    import importlib.util
+    qp = os.path.join(ROOT, "scripts", "check_script_quality.py")
+    spec = importlib.util.spec_from_file_location("q", qp)
+    q = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(q)
+    return q
+
+
 def self_check(cfg, md_text):
     """稿子自检（复用口径：时长/类比/提问/行动指令/未解释术语/图片）。"""
     import importlib.util
@@ -754,16 +767,29 @@ def self_check(cfg, md_text):
     q = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(q)
 
-    main_body = md_text.split("## 附 ·")[0]
+    # 正文范围：排除附录（各种附录标题形态都要切掉）
+    # ★ 自检/闸门/复审必须用**同一个**切法，否则"未解释术语"数会差 1
+    import re as _re
+    main_body = md_text
+    m = _re.search(r"^##\s*附", main_body, _re.M)
+    if m:
+        main_body = main_body[:m.start()]
     body = q.body_of(main_body)
     cn = len(CN.findall(body))
     dur = cn / cfg["script_speed_cpm"] * 60
     counts = {
-        "action_instructions": sum(body.count(k) for k in q.ACTION),
+        "action_instructions": q.count_action_instructions(body),
         "check_questions": sum(body.count(k) for k in q.CHECK_Q),
         "analogy_marks": sum(1 for k in q.ANALOGY_SEG if k in body),
     }
     counts["body_cn_chars"] = cn
     counts["body_duration_sec"] = round(dur, 1)
     counts["body_duration_min"] = round(dur / 60, 1)
+    # 未当场解释的术语（费曼核心红线，= 0）—— 与自检/复审同一口径（单一来源）
+    try:
+        unexp = q.find_unexplained_terms(body, q.split_sections(main_body))
+        counts["unexplained_terms"] = len(unexp)
+        counts["unexplained_detail"] = [u["term"] for u in unexp]
+    except Exception:
+        counts["unexplained_terms"] = 0
     return counts

@@ -44,3 +44,7 @@ outputs/
 
 # 一次性脚本（某次会话专用，不入库）
 scripts/restore_origin_repo*.py
+
+# 一次性数据迁移脚本
+scripts/_merge_practice_once.py
+scripts/_refresh_report_once.py
