@@ -18,6 +18,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 
 from . import pipeline_ops as ops
@@ -73,39 +74,81 @@ def segment_outline(cfg, transcript, duration_sec, log=None):
     return outline
 
 
-def _extract_json(text):
-    """从 LLM 回复里抠出第一个 JSON 对象或数组（容忍 ```json 包裹、尾部多余逗号）。
+def _scan_json_block(s, lo, hi):
+    """括号配对扫描：从第一个 lo 开始，找配对的 hi，返回完整块（含字符串里的括号不算）。"""
+    start = s.find(lo)
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == lo:
+            depth += 1
+        elif ch == hi:
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None
 
-    关键修复：LLM 在 _FACT_SYS 里被要求「输出 JSON 列表」，常返回 ```json\\n[...]```，
-    旧实现的正则只认 {…} 对象，遇到 […] 数组直接解析失败 → fact_check 静默返回 0 条。
-    这里同时支持对象与数组。
+
+def _extract_json(text):
+    """从 LLM 回复里抠出第一个能解析的 JSON 对象或数组。
+
+    关键修复（都是踩过的坑）：
+      1) LLM 常返回 ```json\\n[...]``` → 先剥围栏
+      2) 用 `rfind` 猜结尾会把**尾部多余文字**一起截进来 → 改用**括号配对扫描**
+         （且字符串里的括号不算）
+      3) 尾部多余逗号 → 再兜一层清洗
+    ★ 解析不出来必须**显式报错**（见 fact_check）——
+      静默返回 None 会让纠错环节"看起来跑过了"，比没跑更危险。
     """
     if not text:
         return None
     s = text.strip()
-    # 去掉 ```json ... ``` / ``` ... ``` 围栏
     if "```" in s:
-        m = re.search(r"```(?:json)?\s*([\{\[].*?[\}\]])\s*```", s, re.S)
+        m = re.search(r"```(?:json)?\s*(.*?)\s*```", s, re.S)
         if m:
-            s = m.group(1)
-    # 找最外层 { 或 [（选起始最靠前的那个，通常就是顶层结构）
-    cands = []
-    for lo, hi in (("{", "}"), ("[", "]")):
-        a, b = s.find(lo), s.rfind(hi)
-        if a != -1 and b != -1 and b > a:
-            cands.append((a, b))
-    if not cands:
+            s = m.group(1).strip()
+    # 扫描：**最外层**结构（按第一个出现的括号类型定，不要取到内层）
+    starts = [(i, s[i]) for i in (s.find("["), s.find("{")) if i >= 0]
+    if not starts:
         return None
-    a, b = min(cands, key=lambda x: x[0])
-    cand = s[a:b + 1]
-    try:
-        return json.loads(cand)
-    except Exception:
-        try:
-            return json.loads(cand.replace(",}", "}").replace(",]", "]"))
-        except Exception:
-            return None
-
+    starts.sort()
+    first_lo = starts[0][1]
+    hi = "]" if first_lo == "[" else "}"
+    cand = _scan_json_block(s, first_lo, hi)
+    if cand:
+        for attempt in (cand,
+                        cand.replace(",}", "}").replace(",]", "]"),
+                        re.sub(r",\s*([}\]])", r"\1", cand)):
+            try:
+                return json.loads(attempt)
+            except Exception:
+                continue
+    # 兜底：被截断时**抢救第一个完整对象/数组**（与对账引擎的抢救策略一致）
+    for lo, h in (("{", "}"), ("[", "]")):
+        i = s.find(lo)
+        while i >= 0:
+            j = s.find(h, i + 1)
+            while j > 0:
+                try:
+                    return json.loads(s[i:j + 1])
+                except Exception:
+                    j = s.find(h, j + 1)
+            i = s.find(lo, i + 1)
+    return None
 
 # ============================================================== 2. 分段精准抽帧
 def _ink_score(path):
@@ -505,6 +548,15 @@ _FACT_SYS = """你是严谨的内容核查员。对比「原始视频转写」�
 找出原视频或讲稿中存在的错误 / 不严谨处，输出严格 JSON 列表（最多 5 条最关键的）：
 [{ "original": "原话或讲稿原句", "issue": "问题类型(自相矛盾/缺条件前缀/错别字/与公认规则冲突/事实错误)",
    "correction": "正确说法", "basis": "依据" }]
+
+★★ 「original」字段的硬要求（**必须遵守，否则系统无法自动改正**）：
+  1) 必须是「生成的讲课稿」里**逐字出现**的一段连续文字（不要转写里的原话）
+  2) 长度 12~30 字，**只取一句话**，不要跨段、不要跨句拼接
+  3) **绝对不要**加括号说明、不要写"（原转写：…）"、不要用省略号"……"或"…"截断、
+     不要加自己的评论
+  4) 只给出要**改掉的那一句**（不要把整段都抄进来）
+例：{"original": "它一定是要突破趋势线的", "issue": "自相矛盾",
+     "correction": "绝大多数结构性反转都会伴随突破趋势线", "basis": "…"}
 只输出 JSON。"""
 
 
@@ -512,13 +564,17 @@ def fact_check(cfg, transcript, script, log=None):
     user = f"【原始转写】\n{transcript}\n\n【生成的讲课稿】\n{script}\n\n请输出纠错 JSON 列表。"
     raw = ops.call_llm(cfg, _FACT_SYS, user, log=log)
     if not raw:
-        return []
+        # LLM 双通道都不可用 → 显式报错，绝不静默当成"没有错误"
+        raise RuntimeError("事实核查失败：LLM 双通道均不可用（不是'没有错误'）")
     data = _extract_json(raw)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and "corrections" in data:
         return data["corrections"]
-    return []
+    # ★ 解析失败 → 显式报错。旧实现返回 []，看起来"跑过了"其实没跑成 ——
+    #   静默通过比没有校验更危险。
+    tail = (raw or "")[-200:].replace("\n", " ")
+    raise RuntimeError(f"事实核查结果无法解析成 JSON（原文尾部：{tail!r}）")
 
 
 # ============================================================== 5. 自制概念图（原生渲染，自动化）
@@ -898,7 +954,29 @@ def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections
     return "\n".join(parts)
 
 
-def quality_gate(cfg, script, truncated=False):
+def _orphan_images(out_dir, script):
+    """抽出来却没被正文引用的图（白抽：白占磁盘白占版面）。
+
+    返回 (孤图数, 磁盘上的图总数)。
+    """
+    import re as _re
+    base = out_dir or ""
+    if not base or not os.path.isdir(base):
+        return 0, 0
+    referenced = set(os.path.basename(p) for p in
+                     _re.findall(r"!\[[^\]]*\]\(([^)]+)\)", script))
+    on_disk = []
+    for sub in ("frames_clean", "diagrams"):
+        d = os.path.join(base, sub)
+        if os.path.isdir(d):
+            for fn in os.listdir(d):
+                if fn.lower().endswith((".jpg", ".png")):
+                    on_disk.append(fn)
+    orphans = [fn for fn in on_disk if fn not in referenced]
+    return len(orphans), len(on_disk)
+
+
+def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=None):
     """质量闸门：返回 (自检字典, 不合格项列表[])。不合格必须显式报出。
 
     硬指标（红线）：
@@ -907,6 +985,13 @@ def quality_gate(cfg, script, truncated=False):
       - 检验提问 ≥ 3
       - 正文 ≥ 1500 字
       - **未当场解释的术语 = 0**（费曼法核心：讲不清就是没懂）
+      - **已识别的事实错误必须都改进正文**（unresolved_corr 为空）
+      - **段配图率 ≥ 40%**（课件要有画面，不是纯文字稿）
+      - **孤图率 ≤ 20%**（抽了不引用 = 白抽）
+      - **类比段覆盖率 ≥ 30%**（讲不清就靠类比，费曼法核心）
+
+    参考指标（写进附四自检，不阻塞出稿 —— 区分度证据不足，进了容易误报）：
+      平均句长 / 长句率 / 书面连接词密度 / 口语填充词密度
     """
     try:
         checks = ops.self_check(cfg, script)
@@ -925,6 +1010,22 @@ def quality_gate(cfg, script, truncated=False):
     if n_unexp:
         terms = "、".join((checks.get("unexplained_detail") or [])[:5])
         gate.append(f"{n_unexp} 个术语未当场解释（要求 0）：{terms}")
+    if unresolved_corr:
+        gate.append(f"{len(unresolved_corr)} 处已识别的事实错误没能改进正文（要求 0）："
+                    + "、".join(c.get("original", "")[:18] for c in unresolved_corr[:3]))
+    # 画面结构
+    pic_rate = checks.get("seg_pic_rate", 0)
+    if pic_rate < 40:
+        gate.append(f"只有 {pic_rate}% 的段落配了图（要求 ≥40%）—— 课件不能是纯文字稿")
+    n_orphan, n_total = _orphan_images(out_dir, script)
+    checks["orphan_images"] = n_orphan
+    checks["images_total"] = n_total
+    if n_total and n_orphan * 100 / n_total > 20:
+        gate.append(f"{n_orphan}/{n_total} 张抽出来的图没被正文引用（孤图率上限 20%）")
+    # 类比覆盖（费曼核心）
+    ana_rate = checks.get("analogy_seg_rate", 0)
+    if ana_rate < 30:
+        gate.append(f"只有 {ana_rate}% 的段落有类比（要求 ≥30%）—— 讲不清就靠类比")
     return checks, gate
 
 
@@ -1055,6 +1156,279 @@ def repair_unexplained_terms(cfg, script, checks, log=None):
     return out, [it["term"] for it in items]
 
 
+_MATCH_STRIP = " \t　【】[]（）()《》“”\"'"
+
+
+def _norm_for_match(s):
+    """归一化：去掉空白与成对符号，保留标点（避免误匹配）。"""
+    return "".join(ch for ch in (s or "") if ch not in _MATCH_STRIP)
+
+
+def _norm_with_map(s):
+    """归一化字符串 + 每个归一化字符到原文下标的映射。"""
+    out, idxmap = [], []
+    for i, ch in enumerate(s or ""):
+        if ch in _MATCH_STRIP:
+            continue
+        out.append(ch)
+        idxmap.append(i)
+    return "".join(out), idxmap
+
+
+def _find_span(text, target):
+    """在 text 里找 target 的位置（允许空白/【】差异），返回 (start, end) 或 None。
+
+    先精确找；找不到就归一化后在归一化串上滑窗比对，再映射回原文下标。
+    """
+    if not target:
+        return None
+    i = text.find(target)
+    if i >= 0:
+        return (i, i + len(target))
+    nt = _norm_for_match(target)
+    if len(nt) < 6:
+        return None
+    norm_text, imap = _norm_with_map(text)
+    if len(norm_text) < len(nt):
+        return None
+    pos = norm_text.find(nt)
+    if pos < 0:
+        return None
+    return (imap[pos], imap[pos + len(nt) - 1] + 1)
+
+
+def _shorten_candidates(orig):
+    """给匹配降级用的候选短片段。
+
+    LLM 给的 original 常带括号说明（"…（原转写："…"）"）或省略号截断（"……"），
+    这类整串在正文里必然找不到 → 去掉说明、截到标点前再试。
+    """
+    cands = []
+    # ① 去掉括号说明
+    s = re.sub(r"（[^）]*）|\([^)]*\)", "", orig)
+    s = s.strip()
+    if s and s != orig:
+        cands.append(s)
+    # ② 截到省略号/破折号/问号为止
+    s2 = re.split(r"……|…+|\s*——\s*", s)[0].strip()
+    if len(s2) >= 8 and s2 != s:
+        cands.append(s2)
+        cands.append(s2[:20])
+        cands.append(s2[:14])
+    # ③ 原串本身的前缀
+    if len(orig) > 14:
+        cands.append(orig[:14])
+    return [c for c in dict.fromkeys(cands) if len(c) >= 8]
+
+
+def apply_corrections(script, corrections, log=None):
+    """把 fact_check 识别出的错误**外科式改正**到正文里（不重写全稿）。
+
+    ★ 为什么必须改正：原来只把错误列进文末附二，**正文里的话还是错的** ——
+      而这份稿子是"照着念"的，照着念就会念错。费曼法里"讲错"比"讲不透"更糟。
+
+    返回 (新正文, 未改正列表)。未改正的会在闸门里报出来（不静默放过）。
+    """
+    out = script
+    fixed, unresolved = 0, []
+    for c in (corrections or []):
+        orig = (c.get("original") or "").strip()
+        fix = (c.get("correction") or "").strip()
+        if not orig or not fix or orig == fix:
+            continue
+        span = _find_span(out, orig)
+        # 降级：LLM 常在 original 里加括号说明或用省略号截断 →
+        # 去掉说明、取前若干字再试一次（只取到句读为止，避免误伤）
+        if span is None:
+            for cand in _shorten_candidates(orig):
+                span = _find_span(out, cand)
+                if span:
+                    break
+        if span is None:
+            unresolved.append({"original": orig[:70], "issue": c.get("issue", ""),
+                               "reason": "原文里找不到这句"})
+            continue
+        s, e = span
+        out = out[:s] + fix + out[e:]
+        fixed += 1
+    if log:
+        log(f"  纠错改正：{fixed} 处已改进正文"
+            + (f"，{len(unresolved)} 处未找到原句" if unresolved else ""))
+    return out, unresolved
+
+
+_ANALOGY_FIX_SYS = """你是讲课稿编辑。给你若干个「段落标题 + 该段要点」，请为**每一段**写一个
+**贯穿该段**的类比（一个生活/常识场景，帮他听懂这一段在讲什么）。
+
+要求：
+- 每个类比一句话，20~40 字
+- 必须用「就像」「好比」「相当于」「打个比方」「你可以理解为」这类说法引出
+  （自检工具靠这些标记识别"有类比"）
+- 类比要**贴住该段的内容**（不要用同一个类比套所有段，不要泛泛而谈）
+- 用外行能懂的话
+
+只输出 JSON：{"items": [{"seg": "段落标题", "analogy": "类比"}]}"""
+
+
+def _split_script_segments(script):
+    """把稿子按 '## ' 标题切成段，返回 [(标题, 起止下标, 段正文)]。"""
+    out = []
+    cur = None
+    pos = 0
+    for m in re.finditer(r"^##\s+(.+)$", script, re.M):
+        if cur:
+            out.append((cur[0], cur[1], m.start(), script[cur[1]:m.start()]))
+        cur = (m.group(1).strip(), m.end())
+    if cur:
+        out.append((cur[0], cur[1], len(script), script[cur[1]:]))
+    return out
+
+
+def repair_missing_pictures(script, frame_manifest, log=None):
+    """给**没有配图**的段补上它自己的抽帧（语义天然相关：帧就是为这段抽的）。
+
+    返回 (新稿, 补了多少处)。
+    """
+    if not frame_manifest:
+        return script, 0
+    segs = _split_script_segments(script)
+    if not segs:
+        return script, 0
+    # 帧按段标题索引
+    by_seg = {}
+    for fr in frame_manifest:
+        by_seg.setdefault((fr.get("seg") or "").strip(), []).append(fr)
+    # 已被引用的图
+    used = set(os.path.basename(p) for p in
+               re.findall(r"!\[[^\]]*\]\(([^)]+)\)", script))
+    inserts = []
+    for title, s, e, body in segs:
+        if "![" in body:
+            continue
+        cands = [f for f in by_seg.get(title, []) if
+                 os.path.basename(f["rel_path"]) not in used]
+        if not cands:
+            continue
+        fr = max(cands, key=lambda f: f.get("ink", 0))
+        used.add(os.path.basename(fr["rel_path"]))
+        note = (fr.get("note") or "").strip()
+        alt = note or title
+        inserts.append((e, f"\n\n【指图】\n![{alt}]({fr['rel_path']})\n"))
+    if not inserts:
+        return script, 0
+    out = script
+    for pos, text in sorted(inserts, reverse=True):
+        out = out[:pos] + text + out[pos:]
+    if log:
+        log(f"  修补：{len(inserts)} 个无图段落补上自己的抽帧")
+    return out, len(inserts)
+
+
+def move_orphan_images(out_dir, script, log=None):
+    """把**没被正文引用**的图挪到 work/ 暂存区（move 不是 delete，避开安全钩子）。
+
+    挪走的好处：交付目录只剩真正用到的图（附一清单与正文一致），暂存区那份
+    会被清理逻辑当中间产物回收 → 既过闸门又省磁盘。
+    返回 (挪走数量, 清单里要保留的图列表)。
+    """
+    n_orphan, n_total = _orphan_images(out_dir, script)
+    if not n_orphan:
+        return 0, []
+    referenced = set(os.path.basename(p) for p in
+                     re.findall(r"!\[[^\]]*\]\(([^)]+)\)", script))
+    moved = 0
+    keep = []
+    trash = os.path.join((cfg_work_dir() or ""), "_orphan_images")
+    try:
+        os.makedirs(trash, exist_ok=True)
+    except Exception:
+        trash = None
+    for sub in ("frames_clean", "diagrams"):
+        d = os.path.join(out_dir, sub)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.lower().endswith((".jpg", ".png")):
+                continue
+            if fn in referenced:
+                keep.append(f"{sub}/{fn}")
+                continue
+            src = os.path.join(d, fn)
+            if trash:
+                try:
+                    shutil.move(src, os.path.join(trash, fn))
+                    moved += 1
+                    continue
+                except Exception as e:
+                    if log:
+                        log(f"  孤图挪走失败 {fn}：{e}")
+            keep.append(f"{sub}/{fn}")
+    if log:
+        log(f"  清理：{moved} 张孤图已挪到暂存区（附一只列用到的图）")
+    return moved, keep
+
+
+def cfg_work_dir():
+    """work 暂存区路径（用于挪孤图）。"""
+    try:
+        from . import config as cfgmod
+        return cfgmod.load().get("work_dir")
+    except Exception:
+        return None
+
+
+def repair_missing_analogies(cfg, script, checks, log=None):
+    """给**没有类比**的段各补一个贴题的类比（一次 LLM 调用补多段）。"""
+    segs = _split_script_segments(script)
+    need = []
+    for title, s, e, body in segs:
+        if not any(k in body for k in ("就像", "好比", "相当于", "打个比方",
+                                      "你可以理解为", "你可以这样理解", "想象",
+                                      "如同", "犹如", "比喻", "类比")):
+            need.append((title, body))
+    if not need or len(need) > 12:
+        if len(need) > 12:
+            if log:
+                log(f"  类比修补跳过：缺类比的段有 {len(need)} 段（>12，一次补太多）")
+        return script, 0
+    listing = "\n".join(f"{i+1}. {t}｜{b.strip()[:120]}"
+                        for i, (t, b) in enumerate(need))
+    user = f"请为下列 {len(need)} 个段落各写一个贴题的类比：\n{listing}"
+    raw = ops.call_llm(cfg, _ANALOGY_FIX_SYS, user, log=log)
+    if not raw:
+        return script, 0
+    try:
+        data = json.loads(ops.extract_markdown(raw).strip()
+                          .replace("```json", "").replace("```", "").strip())
+        items = data.get("items") or []
+    except Exception as e:
+        if log:
+            log(f"  类比修补解析失败（{e}）")
+        return script, 0
+    m = {str(it.get("seg", "")).strip(): str(it.get("analogy", "")).strip()
+         for it in items if isinstance(it, dict)}
+    out = script
+    n = 0
+    for title, s, e, body in reversed(segs):
+        ana = m.get(title)
+        if not ana or title in [t for t, _s, _e, _b in segs if _s == s]:
+            pass
+        if not ana:
+            continue
+        if any(k in body for k in ("就像", "好比", "相当于", "打个比方",
+                                   "你可以理解为", "你可以这样理解", "想象",
+                                   "如同", "犹如", "比喻", "类比")):
+            continue
+        # 插到该段第一句之后
+        mm = re.search(r"[。！？]", body)
+        pos = s + (mm.end() if mm else 0)
+        out = out[:pos] + f"打个比方，{ana}。" + out[pos:]
+        n += 1
+    if log and n:
+        log(f"  修补：{n} 个段落补上贴题类比")
+    return out, n
+
+
 def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
                      log=None, image_gen=None, stage_cb=None,
                      style_name="faithful", intensity=3, extra_notes="",
@@ -1126,6 +1500,11 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     corrections = fact_check(cfg, transcript, script, log=log)
     if log:
         log(f"  纠错：{len(corrections)} 条")
+    # ★ 把纠错**外科式改正到正文**（原来只列在附二 → 正文里的话还是错的，
+    #   而这份稿子是照着念的，照着念就会念错）。改不掉的留给闸门报警。
+    unresolved_corr = []
+    if corrections:
+        script, unresolved_corr = apply_corrections(script, corrections, log=log)
     _st("fact_check", "核查纠错", 1.0)
 
     meta = {"video": os.path.basename(video),
@@ -1133,24 +1512,47 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
 
     # ── 自检 + 质量闸门（必须在写盘/出PDF**之前**，否则横幅进不了文件）
     _st("self_check", "稿子自检", 0.0)
-    checks, gate = quality_gate(cfg, script, truncated)
+    checks, gate = quality_gate(cfg, script, truncated,
+                                unresolved_corr=unresolved_corr, out_dir=out_dir)
     repaired = []
     if gate:
         # 外科式修补 A：术语未当场解释 → 在首次出现处插一句大白话
         if checks.get("unexplained_terms", 0):
             s3, r3 = repair_unexplained_terms(cfg, script, checks, log=log)
             if s3 != script:
-                c3, g3 = quality_gate(cfg, s3, truncated)
-                script, checks, gate = s3, c3, g3
-                repaired += [f"术语解释×{len(r3)}"]
-        # 外科式修补 B：只补缺的那一节（行动指令/检验提问），不重写全稿
-        if gate:
-            script2, repaired2 = repair_missing(cfg, script, checks, log=log)
-            if script2 != script:
-                checks2, gate2 = quality_gate(cfg, script2, truncated)
-                if len(gate2) < len(gate):
-                    script, checks, gate = script2, checks2, gate2
-                repaired += repaired2
+                script = s3
+                repaired.append(f"术语解释×{len(r3)}")
+        # 外科式修补 B：段落没配图 → 补上**该段自己的抽帧**（帧就是为这段抽的，语义天然相关）
+        if checks.get("seg_pic_rate", 0) < 40:
+            s4, n4 = repair_missing_pictures(script, frame_manifest, log=log)
+            if s4 != script:
+                script = s4
+                repaired.append(f"配图×{n4}")
+        # 外科式修补 C：段落没类比 → 给每段补一个贴题类比
+        if checks.get("analogy_seg_rate", 0) < 30:
+            s5, n5 = repair_missing_analogies(cfg, script, checks, log=log)
+            if s5 != script:
+                script = s5
+                repaired.append(f"类比×{n5}")
+        # 外科式修补 D：行动指令/检验提问不足 → 只补缺的那一节
+        s6, r6 = repair_missing(cfg, script, checks, log=log)
+        if s6 != script:
+            script = s6
+            repaired.append("动作清单" if r6 else "")
+        # 修完重新判定
+        checks, gate = quality_gate(cfg, script, truncated,
+                                    unresolved_corr=unresolved_corr, out_dir=out_dir)
+    # 孤图清理（move 到 work/ 暂存区，不是 delete → 避开安全钩子；暂存区会被回收）
+    n_moved, kept = move_orphan_images(out_dir, script, log=log)
+    if n_moved:
+        # 清单同步：被挪走的图不能再出现在附一画面清单里（否则链接失效）
+        keep_set = set(os.path.basename(k) for k in kept)
+        frame_manifest = [f for f in frame_manifest
+                          if os.path.basename(f.get("rel_path", "")) in keep_set]
+        diagram_manifest = [d for d in (diagram_manifest or [])
+                            if os.path.basename(d.get("rel_path", "")) in keep_set]
+        checks, gate = quality_gate(cfg, script, truncated,
+                                    unresolved_corr=unresolved_corr, out_dir=out_dir)
     _st("self_check", "稿子自检", 1.0)
 
     _st("assemble", "组装与PDF", 0.0)

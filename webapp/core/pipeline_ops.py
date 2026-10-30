@@ -785,6 +785,32 @@ def self_check(cfg, md_text):
     counts["body_cn_chars"] = cn
     counts["body_duration_sec"] = round(dur, 1)
     counts["body_duration_min"] = round(dur / 60, 1)
+
+    # ── 画面结构 + 可懂度（参考指标；闸门取其中 3 项硬指标）
+    segs = q.split_sections(main_body)
+    seg_total = max(1, len(segs))
+    counts["analogy_seg_rate"] = round(
+        sum(1 for _t, txt in segs if any(k in txt for k in q.ANALOGY_SEG))
+        * 100 / seg_total, 1)
+    # 段配图率必须看**原文**（body_of 会把图片行滤掉，用它算永远是 0）
+    raw_segs, cur = [], None
+    for l in main_body.split("\n"):
+        if re.match(r"^#{2,3}\s", l):
+            cur = []
+            raw_segs.append(cur)
+        elif cur is not None:
+            cur.append(l)
+    counts["seg_pic_rate"] = round(
+        sum(1 for g in raw_segs if any("![" in x for x in g)) * 100 / seg_total, 1)
+    # 可懂度（外行能不能跟得上）
+    sents = [s.strip() for s in re.split(r"[。！？!?\n]", body) if s.strip()]
+    lens = [len(CN.findall(s)) for s in sents]
+    counts["avg_sen_len"] = round(sum(lens) / max(1, len(lens)), 1)
+    counts["long_sen_rate"] = round(
+        sum(1 for n in lens if n > 40) * 100 / max(1, len(sents)), 1)
+    per100 = lambda n: round(n * 100 / max(1, cn), 2)
+    counts["connector_density"] = per100(sum(body.count(k) for k in q.CONNECTORS))
+    counts["filler_density"] = per100(sum(body.count(k) for k in q.FILLERS))
     # 未当场解释的术语（费曼核心红线，= 0）—— 与自检/复审同一口径（单一来源）
     try:
         unexp = q.find_unexplained_terms(body, q.split_sections(main_body))
