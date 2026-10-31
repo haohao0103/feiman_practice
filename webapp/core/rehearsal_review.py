@@ -154,6 +154,12 @@ def _align_one_chunk(cfg, chunk, start, transcript, log, max_tokens):
     for attempt in range(2):          # 失败重试一次：LLM 输出是非确定的
         raw = ops.call_llm(cfg, _ALIGN_SYS, user, log=log, max_tokens=max_tokens)
         data = _extract_json(raw)
+        # ★ LLM 偶尔把顶层 key 写成 "segs"（实测两次）→ 认它，否则整批被判"解析失败"
+        if isinstance(data, dict) and "segments" not in data:
+            for alias in ("segs", "segment", "items"):
+                if alias in data and isinstance(data[alias], list):
+                    data = {"segments": data[alias], "summary": data.get("summary", {})}
+                    break
         if isinstance(data, dict) and "segments" in data:
             break
         if isinstance(data, list):
