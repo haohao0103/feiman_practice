@@ -192,23 +192,32 @@ def archive_round(cfg, key, round_data):
 
 
 # ============================================================ 趋势
-def compute_trend(rounds):
-    """掌握度趋势。up=在进步 / flat=卡住 / down=退步。"""
+def compute_trend(rounds, delta_threshold=5.0):
+    """掌握度趋势。up=在进步 / flat=卡住 / down=退步。
+
+    ★ 阈值为什么是 5 分而不是 3 分：
+      实测同一份课件 + 同一份试讲**跑两次**，总分 31.1 vs 32.8（**判定噪声 ±1.7 分**），
+      逐段判定还会波动（"全覆盖" 3↔5 互换）。
+      阈值若低于 2 倍噪声，"进步/退步"有一半概率是噪声而不是真变化。
+      → 阈值 5 分（> 2×1.7），并且在报告里标出噪声带。
+    """
     scores = [r.get("score", 0) for r in rounds]
     if len(scores) < 2:
         return {"scores": scores, "deltas": [], "trend": "first",
-                "avg_delta": 0.0, "best": max(scores) if scores else None}
+                "avg_delta": 0.0, "best": max(scores) if scores else None,
+                "delta_threshold": delta_threshold}
     deltas = [round(scores[i] - scores[i - 1], 1) for i in range(1, len(scores))]
     last3 = deltas[-3:]
     avg = sum(last3) / len(last3)
-    if avg >= 3:
+    if avg >= delta_threshold:
         trend = "up"
-    elif avg <= -3:
+    elif avg <= -delta_threshold:
         trend = "down"
     else:
         trend = "flat"
     return {"scores": scores, "deltas": deltas, "trend": trend,
-            "avg_delta": round(avg, 1), "best": max(scores)}
+            "avg_delta": round(avg, 1), "best": max(scores),
+            "delta_threshold": delta_threshold}
 
 
 def recurring_weak_segments(rounds, top=5):
@@ -349,6 +358,10 @@ def build_practice_report(cfg, data, chart_rel=None):
     state = "已达标" if last >= th else ("在进步" if trend["trend"] == "up"
                                          else ("卡住" if trend["trend"] == "flat" else "退步"))
     A(f"**当前掌握度 {last:.0f} 分（{state}）｜ 历史最高 {trend.get('best', 0):.0f} ｜ 趋势 {trend['trend']}**")
+    A("")
+    A(f"> 趋势判定阈值 ±{trend.get('delta_threshold', 5):.0f} 分。"
+      "同一份试讲重复对账的判定噪声约 ±1.7 分（逐段判定也会有波动），"
+      "小于 2 倍噪声的分数变化不作趋势结论。")
     A("")
     if chart_rel:
         A(f"![掌握度趋势]({chart_rel})")

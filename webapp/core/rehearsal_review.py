@@ -23,6 +23,12 @@ from . import styles
 
 # 复用链路B 的口径词表，保证两处判定一致
 from .runner import CHECK_Q, ACTION
+from .pipeline_ops import load_quality_module
+
+# 口径单一来源：提问/行动的**判定**统一到 check_script_quality
+# （此前对账侧用 runner 里那份固定短语词表，与自检/闸门/复审不是同一套 →
+#  课件写"先给你一个思考题…"这种自问句根本不命中 → 对账维度恒为 0 的假阴性）
+_Q = load_quality_module()
 
 # 仓库根目录（由文件位置推导，避免硬编码本机路径）
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -84,8 +90,8 @@ def parse_courseware_sections(md_text):
                 s["duration_min"] = float(m.group(1))
             except ValueError:
                 pass
-        s["check_questions"] = _sentences_with(s["body"], CHECK_Q)
-        s["actions"] = _sentences_with(s["body"], ACTION)
+        s["check_questions"] = _Q.find_check_questions(s["body"])
+        s["actions"] = _Q.find_actions(s["body"])
         # 要点摘要：正文前 100 字（够 LLM 判断覆盖与否）
         s["key_point"] = re.sub(r"\s+", " ", s["body"])[:100]
     return sections
@@ -120,64 +126,101 @@ _ALIGN_SYS = """你是试讲评估官。对比「课件段清单」与「学员�
 }
 再输出 "summary": {"strong":"讲得好的地方","weak":"最该改的3件事","overall":"总评"}。
 
+★★ 三个执行类判定的口径（**别判错，否则分数失真**）：
+- check_question_asked：**向观众提问**才算（转写里出现"大家…""你们…""你觉得…""想好的举个手"
+  这类互动问句）。学员说"我们心里过一遍/自己想想"而没问出口 → false。
+- action_instruction_given：学员**当着观众给出了动作**（"现在请你们打开…""拿出纸笔…"
+  "去标出来…"）才算；只在心里想、或者完全没提 → false。
+- picture_referred：学员**明确指向那张图**（"大家看这张图/这张K线/右边这里/图上这个位置"）
+  才算；只讲内容不提图 → false。
+
 只输出 JSON。保持紧凑，不要复述课件原文。"""
 
 
+def _align_one_chunk(cfg, chunk, start, transcript, log, max_tokens):
+    """判定一批段。返回 (verdicts, summary)。失败时**拆半重试**。
+
+    ★ 为什么要拆半而不是同批重试：截断是**输出长度**问题，批越小越不容易截断。
+      实测 8 段一批截断后，同批重试仍截（只抢救出 1/8 段 → 判定缺失 7 段）。
+      拆成 4+4 后成功率显著更高。
+    """
+    spec = build_spec(chunk, offset=start)
+    user = (f"【课件段清单】（本批 {len(chunk)} 段，编号 {start+1}~{start+len(chunk)}）\n"
+            f"{spec}\n\n【学员试讲转写】\n{transcript}\n\n"
+            f"请逐段判定，输出 JSON（每段 missed_points 最多 3 条、wrong 最多 2 条）。"
+            f"只输出 JSON，不要任何解释文字。")
+    raw = None
+    data = None
+    for attempt in range(2):          # 失败重试一次：LLM 输出是非确定的
+        raw = ops.call_llm(cfg, _ALIGN_SYS, user, log=log, max_tokens=max_tokens)
+        data = _extract_json(raw)
+        if isinstance(data, dict) and "segments" in data:
+            break
+        if isinstance(data, list):
+            data = {"segments": data, "summary": {}}
+            break
+        if attempt == 0:
+            log(f"  对账第 {start+1}~{start+len(chunk)} 段 JSON 解析失败，"
+                f"重试一次（原文前 200 字：{(raw or '')[:200]!r}）")
+            continue
+        salvaged = _salvage_segments(raw)
+        if salvaged:
+            log(f"  对账第 {start+1}~{start+len(chunk)} 段：JSON 仍不完整，"
+                f"抢救出 {len(salvaged)}/{len(chunk)} 段完整判定")
+            data = {"segments": salvaged, "summary": {}}
+        else:
+            log(f"  对账第 {start+1}~{start+len(chunk)} 段解析失败，本批跳过"
+                f"（原文前 200 字：{(raw or '')[:200]!r}）")
+    if not data:
+        return [], {}
+    segs = data.get("segments") or []
+    for v in segs:
+        try:
+            v["seg"] = int(v.get("seg", 0)) + start
+        except (TypeError, ValueError):
+            pass
+    return segs, (data.get("summary") or {})
+
+
 def align_rehearsal(cfg, sections, transcript, log=None, chunk_size=8,
-                    max_tokens=8000):
-    """试讲转写 → 逐段判定。返回 {segments:[...], summary:{...}}
+                    max_tokens=24000):
+    """试讲转写 → 逐段判定。返回 {segments:[...], summary:{...}, judged, total}
 
     ★ 分批：一次输出 20+ 段的判定 JSON 会撞 max_tokens 被**截断**（实测 22 段时
     JSON 断在半路解析失败）。所以按 chunk_size 分批调用，段号加偏移拼回。
-    ★ 兜底：万一还是被截断，从残缺 JSON 里抢救出**完整**的段对象，不整批丢弃。
+    ★ 兜底：万一还是被截断，从残缺 JSON 里抢救出**完整**的段对象；
+      抢救不全时**拆半再试**（截断是长度问题，拆小批能救回来）。
+    ★ judged/total 会告诉你这一轮**实际判定覆盖了多少段** —— 判定缺失的段
+      在掌握度里按"未覆盖"计（偏保守），但必须让人看得见。
     """
     if not sections:
-        return {"segments": [], "summary": {}}
+        return {"segments": [], "summary": {}, "judged": 0, "total": 0}
     all_segs = []
     summary = {}
     n = len(sections)
+
+    def run_chunk(chunk, start, depth=0):
+        """返回该批的 (判定列表, summary)；截断且抢救不全时拆半再来。"""
+        segs, sm = _align_one_chunk(cfg, chunk, start, transcript, log, max_tokens)
+        if len(segs) < len(chunk) and len(chunk) > 1 and depth < 3:
+            mid = len(chunk) // 2
+            log(f"  对账第 {start+1}~{start+len(chunk)} 段判定不全"
+                f"（{len(segs)}/{len(chunk)}），拆成两批重试")
+            a, _ = run_chunk(chunk[:mid], start, depth + 1)
+            b, _ = run_chunk(chunk[mid:], start + mid, depth + 1)
+            return a + b, sm
+        return segs, sm
+
     for start in range(0, n, chunk_size):
         chunk = sections[start:start + chunk_size]
-        spec = build_spec(chunk, offset=start)
-        user = (f"【课件段清单】（本批 {len(chunk)} 段，编号 {start+1}~{start+len(chunk)}）\n"
-                f"{spec}\n\n【学员试讲转写】\n{transcript}\n\n"
-                f"请逐段判定，输出 JSON（每段 missed_points 最多 3 条、wrong 最多 2 条）。"
-                f"只输出 JSON，不要任何解释文字。")
-        raw = None
-        data = None
-        for attempt in range(2):          # 失败重试一次：LLM 输出是非确定的
-            raw = ops.call_llm(cfg, _ALIGN_SYS, user, log=log, max_tokens=max_tokens)
-            data = _extract_json(raw)
-            if isinstance(data, dict) and "segments" in data:
-                break
-            if isinstance(data, list):
-                data = {"segments": data, "summary": {}}
-                break
-            if attempt == 0:
-                log(f"  对账第 {start+1}~{start+len(chunk)} 段 JSON 解析失败，"
-                    f"重试一次（原文前 200 字：{(raw or '')[:200]!r}）")
-                continue
-            salvaged = _salvage_segments(raw)
-            if salvaged:
-                log(f"  对账第 {start+1}~{start+len(chunk)} 段：JSON 仍不完整，"
-                    f"抢救出 {len(salvaged)} 段完整判定")
-                data = {"segments": salvaged, "summary": {}}
-            else:
-                log(f"  对账第 {start+1}~{start+len(chunk)} 段解析失败，本批跳过"
-                    f"（原文前 200 字：{(raw or '')[:200]!r}）")
-        if not data:
-            continue
-        for v in data.get("segments", []):
-            try:
-                v["seg"] = int(v.get("seg", 0)) + start
-            except (TypeError, ValueError):
-                pass
-            all_segs.append(v)
-        if not summary and data.get("summary"):
-            summary = data["summary"]
+        segs, sm = run_chunk(chunk, start)
+        all_segs.extend(segs)
+        if not summary and sm:
+            summary = sm
         if log:
             log(f"  对账第 {start+1}~{start+len(chunk)} 段完成（累计 {len(all_segs)} 段）")
-    return {"segments": all_segs, "summary": summary}
+    return {"segments": all_segs, "summary": summary,
+            "judged": len(all_segs), "total": n}
 
 
 def _salvage_segments(text):
@@ -304,6 +347,13 @@ def compute_mastery(verdicts, sections, actual_sec=None, planned_sec=None):
 
     coverage = cov_sum / n_cov if n_cov else 0.0
     fidelity = max(0.0, 1.0 - wrong_cnt / n_cov) if n_cov else 0.0
+    # ★ 判定缺失（LLM 输出被截断、没救回来）的段，**不能当成"学员没讲"** ——
+    #   那是工具没跑完，不是用户的问题。但也不能当没这回事（会掩盖故障）。
+    #   → 掌握度用保守口径（分母=总段数），同时暴露"判定覆盖率"让人看得见。
+    judged = len(by_idx)
+    total_segs = len(sections)
+    missing_verdict = [i for i in range(total_segs) if i not in by_idx]
+    coverage_judged = (cov_sum / judged) if judged else None
     q_rate = q_ask / q_have if q_have else None
     a_rate = a_give / a_have if a_have else None
     p_rate = p_ref / p_have if p_have else None
@@ -321,6 +371,9 @@ def compute_mastery(verdicts, sections, actual_sec=None, planned_sec=None):
     return {
         "score": score,
         "coverage": round(coverage, 3),
+        "coverage_judged": round(coverage_judged, 3) if coverage_judged is not None else None,
+        "verdict_coverage": f"{judged}/{total_segs}",
+        "verdict_missing": missing_verdict[:10],
         "fidelity": round(fidelity, 3),
         "check_q_rate": round(q_rate, 3) if q_rate is not None else None,
         "action_rate": round(a_rate, 3) if a_rate is not None else None,
@@ -363,6 +416,14 @@ def build_alignment_report(mastery, sections, meta):
     A("|---|---|---|")
     A(f"| 知识点覆盖 | {mastery['coverage']*100:.0f}% | 全覆盖 {mastery['segments_covered']} 段 / "
       f"部分 {mastery['segments_partial']} 段 / 未讲 {mastery['segments_missed']} 段 |")
+    vc = mastery.get("verdict_coverage")
+    if vc and "/" in vc:
+        j, t = vc.split("/", 1)
+        if j != t:
+            cj = mastery.get("coverage_judged")
+            extra = (f"（仅看判定过的段是 {cj*100:.0f}%）" if cj is not None else "")
+            A(f"| ⚠ 判定覆盖 | {vc} 段 | 本轮有 {t-j} 段没跑出判定（工具输出被截断，"
+              f"已按未覆盖计，偏保守）{extra} |")
     A(f"| 忠实度 | {mastery['fidelity']*100:.0f}% | 与课件/规则冲突 {mastery['wrong_count']} 处 |")
     A(f"| 检验提问执行 | "
       f"{(f'{mastery['check_q_rate']*100:.0f}%' if mastery['check_q_rate'] is not None else '—')} | "

@@ -109,7 +109,10 @@ async def api_video_review(
     if not file.filename:
         raise HTTPException(400, "未收到文件")
     ext = os.path.splitext(file.filename)[1] or ".mp4"
-    if ext.lower() not in (".mp4", ".mov", ".mkv", ".m4v", ".flv", ".webm", ".avi"):
+    # ★ 音频也接受：逐段对账 + 掌握度 + 改进稿只需要转写文本（画面分析只是附加指标）
+    #   → 传音频上传量从 1GB 降到 10MB 级
+    if ext.lower() not in (".mp4", ".mov", ".mkv", ".m4v", ".flv", ".webm", ".avi",
+                           ".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg"):
         raise HTTPException(400, f"不支持的文件类型: {ext}")
     size_mb = 0
     tid = f"review_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"

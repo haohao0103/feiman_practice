@@ -93,6 +93,49 @@ IMPERATIVE_HINTS = ["请你", "请 ", "你现在", "你来", "大家", "咱们",
                     "你可以", "你把", "你拿", "你标", "你记"]
 
 
+def find_check_questions(body):
+    """找出这段里"要求讲者**向观众提问**"的句子（对账侧的口径来源）。
+
+    ★ 判定不能只靠固定短语：互动问句千变万化
+      （"大家看这张图——你们觉得这里算不算假突破？想好的举个手"）。
+      实测：旧口径只认 CHECK_Q 固定短语 → 课件写"先给你一个思考题…"这种**自问自答**
+      根本不命中 → 段解析认为"该段没设检验提问" → 对账维度恒为 0（假阴性）。
+      判定标准：①有【检验提问】/【提问】/【互动】标记 ②含问号的句子 ③命中 CHECK_Q 词表。
+    """
+    out = []
+    has_marker = False
+    for sent in re.split(r"[。！？；\n]", body):
+        s = sent.strip()
+        if not s:
+            continue
+        # 纯标记行（如「【检验提问】」）本身不是问题句 —— 跳过，但记住"这段确实设了提问"
+        if re.fullmatch(r"【[^】]{1,10}】", s):
+            if re.search(r"检验提问|提问|互动", s):
+                has_marker = True
+            continue
+        if ("？" in s or "?" in s
+                or any(k in s for k in CHECK_Q)):
+            out.append(s)
+    if not out and has_marker:
+        out.append("（课件在此设了检验提问）")   # 有标记但没识别到问句 → 仍算"该段设了提问"
+    return out
+
+
+def find_actions(body):
+    """找出这段里"要求讲者**给观众动作**"的句子（与 count_action_instructions 同口径）。"""
+    out = []
+    for sent in re.split(r"[。！？；\n]", body):
+        s = sent.strip()
+        if not s:
+            continue
+        if ("【动作" in s or "【行动指令" in s
+                or any(k in s for k in ACTION)
+                or (any(v in s for v in ACTION_VERBS)
+                    and any(h in s for h in IMPERATIVE_HINTS))):
+            out.append(s)
+    return out
+
+
 def count_action_instructions(body):
     """数行动指令（让观众动手做的事）。
 

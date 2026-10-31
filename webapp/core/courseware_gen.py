@@ -34,6 +34,9 @@ _OUTLINE_SYS = """你是一门硬核交易/金融教学视频的「课程架构�
 
 划分原则：
 - 整体按内容密度分成若干「期」（如「第1期」「第2期」），每期一个明确主题。
+- ★ **期数要受总时长预算约束**：讲稿展开后每期约 5~8 分钟口播，
+  总时长上限 {total_max} 分钟 → **最多 {max_parts} 期**。
+  宁可一期讲透，不要四期都讲不完（学员讲不完 → 覆盖率腰斩）。
 - 每期下分若干「段」，每段：标题、起始秒、结束秒、本段要点摘要、该段最该插入画面的时刻frame_at_sec。
 - 对需要「自制概念图」的节点，标记 needs_diagram=true 并写 diagram_desc。
   判定标准（宁缺毋滥）：只有当该段**原视频画面里没有现成图表**、且**一张自制图能明显讲清楚这个概念**时才标。
@@ -65,7 +68,7 @@ _OUTLINE_SYS = """你是一门硬核交易/金融教学视频的「课程架构�
 def segment_outline(cfg, transcript, duration_sec, log=None):
     user = (f"视频时长约 {duration_sec/60:.1f} 分钟。以下是带时间戳的中文转写：\n\n"
             f"{transcript}\n\n请输出结构化大纲 JSON。")
-    raw = ops.call_llm(cfg, _OUTLINE_SYS, user, log=log)
+    raw = ops.call_llm(cfg, _outline_sys(cfg), user, log=log)
     if not raw:
         raise RuntimeError("分段大纲 LLM 调用失败（双通道均不可用）")
     outline = _extract_json(raw)
@@ -459,8 +462,37 @@ _SCRIPT_SYS = """你是一位硬核交易/金融教学视频的「讲课稿写�
 8. ★ 出现专业术语（趋势线、极点、深度回调、交易区间、假突破、高点下移、前高、前低、
    通道、极值…）时，必须**当场用一句话解释**（写清「就是…」「意思是…」「指的是…」
    「你可以说它就是…」），不要只喊名词。
+9. ★★ **互动三件套必须"念得出口"**（这一条直接决定学员能不能执行）：
+   - 【检验提问】= **向观众提问**的互动问句，必须念出来、并且给观众留反应时间。
+     ✗ 反例："先给你一个思考题…——好，心里留个答案"（自问自答，观众没参与，检测不到）
+     ✓ 正例："大家看这张图——你们觉得这里算不算假突破？想好的举个手，我们停三秒。"
+   - 【指图】的**下一句必须是口播**（要提到"这张图/这张K线/右边这里"），
+     否则学员讲到那儿嘴里的 ASR 里没有任何"指图"信号，事后对账会判"没指图"。
+     ✓ 正例："【指图】大家看这张图，我们先看整体结构。"
+   - 该给动作的段落，**正文里就要有一句讲给观众的动作指令**（不只写在结尾清单里）：
+     ✓ 正例："现在请你打开看盘软件，把这张图上的前高标出来。"
+     （结尾清单是给你自己看的；正文这句才是学员听得见、也才检测得到）
+10. ★ **总口播时长要落在 {total_min}~{total_max} 分钟**（不要超）。
+    讲不完的课件等于没写：学员只能讲一半，覆盖率直接腰斩。
+    超了就**砍深度**（每个概念少延展一点），不要砍覆盖面。
 
 只输出 markdown 正文，不要任何额外说明。"""
+
+
+def _outline_sys(cfg):
+    """大纲 prompt：注入总时长预算与期数上限。"""
+    tmax = cfg.get("script_total_max", 24)
+    max_parts = max(1, int(tmax // 6))
+    return (_OUTLINE_SYS.replace("{total_max}", str(tmax))
+            .replace("{max_parts}", str(max_parts)))
+
+
+def _script_sys(cfg):
+    """成稿 prompt：注入总时长预算（按配置 + 历史试讲时长定的）。"""
+    tmin = cfg.get("script_total_min", 18)
+    tmax = cfg.get("script_total_max", 24)
+    s = _SCRIPT_SYS.replace("{total_min}", str(tmin)).replace("{total_max}", str(tmax))
+    return s
 
 
 def _style_block(style_name, intensity=3):
@@ -526,7 +558,7 @@ def generate_script(cfg, transcript, outline, frame_manifest, diagram_manifest, 
             f"{_style_block(style_name, intensity)}\n"
             f"{notes_block}\n{frame_block}\n\n请产出完整讲课逐字稿 markdown。")
     mt = int(max_tokens or cfg.get("script_max_tokens", 20000))
-    raw = ops.call_llm(cfg, _SCRIPT_SYS, user, log=log, max_tokens=mt)
+    raw = ops.call_llm(cfg, _script_sys(cfg), user, log=log, max_tokens=mt)
     if not raw:
         raise RuntimeError("逐字稿 LLM 调用失败（双通道均不可用）")
     md = ops.extract_markdown(raw)
@@ -535,7 +567,7 @@ def generate_script(cfg, transcript, outline, frame_manifest, diagram_manifest, 
         if log:
             log(f"  成稿疑似被截断（末行：{md.rstrip().split(chr(10))[-1][-30:]!r}），"
                 f"用 {rt} token 重试一次")
-        raw2 = ops.call_llm(cfg, _SCRIPT_SYS, user, log=log, max_tokens=rt)
+        raw2 = ops.call_llm(cfg, _script_sys(cfg), user, log=log, max_tokens=rt)
         if raw2:
             md2 = ops.extract_markdown(raw2)
             if not looks_truncated(md2) or len(md2) > len(md):
@@ -1013,6 +1045,14 @@ def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=Non
     if unresolved_corr:
         gate.append(f"{len(unresolved_corr)} 处已识别的事实错误没能改进正文（要求 0）："
                     + "、".join(c.get("original", "")[:18] for c in unresolved_corr[:3]))
+    # 时长：单期在 5~8 分钟；**总时长**在预算内（讲不完的课件等于没写）
+    total_min = round(checks.get("body_duration_min", 0), 1)
+    checks["total_budget_min"] = cfg.get("script_total_min", 18)
+    checks["total_budget_max"] = cfg.get("script_total_max", 24)
+    if not (checks["total_budget_min"] <= total_min <= checks["total_budget_max"]):
+        gate.append(f"整篇口播 {total_min:.1f} 分钟不在 "
+                    f"{checks['total_budget_min']}~{checks['total_budget_max']} 分钟"
+                    "（学员讲不完 → 覆盖率腰斩；要么砍深度，要么砍期数）")
     # 画面结构
     pic_rate = checks.get("seg_pic_rate", 0)
     if pic_rate < 40:
@@ -1156,7 +1196,7 @@ def repair_unexplained_terms(cfg, script, checks, log=None):
     return out, [it["term"] for it in items]
 
 
-_MATCH_STRIP = " \t　【】[]（）()《》“”\"'"
+_MATCH_STRIP = " \t　【】[]（）()《》“”\"'*"
 
 
 def _norm_for_match(s):
@@ -1429,6 +1469,38 @@ def repair_missing_analogies(cfg, script, checks, log=None):
     return out, n
 
 
+_PIC_ANCHOR_HINTS = ("这张图", "这张K线", "这张", "看图", "大家看", "看这里",
+                      "图上", "右边", "左边", "这一张")
+
+
+def repair_missing_picture_anchors(script, log=None):
+    """给**没有指图口播**的图补一句锚点（"大家看这张图"）。
+
+    ★ 为什么必须自动补而不是靠 prompt：LLM 会把【指图】当成"不念的标记"，
+      19 处【指图】后面跟的全是内容、没有一句"看这张图" → 学员嘴里没有指图信号 →
+      事后对账"画面引用"恒为 0（实测三轮 0%/12%/46%，轮次之间大幅波动）。
+      补一句口播锚点，是让"指图"这件事**在学员嘴里可检测**的必要条件。
+    返回 (新稿, 补了多少处)。
+    """
+    lines = script.split("\n")
+    out = []
+    n = 0
+    for i, ln in enumerate(lines):
+        out.append(ln)
+        if not ln.strip().startswith("!["):
+            continue
+        # 往后看 3 行（跳过空行）有没有指图口播
+        window = " ".join(lines[i + 1:i + 4])
+        if any(h in window for h in _PIC_ANCHOR_HINTS):
+            continue
+        out.append("")
+        out.append("大家看这张图。")
+        n += 1
+    if n and log:
+        log(f"  修补：{n} 张图补上指图口播锚点（不然学员嘴里没有指图信号）")
+    return "\n".join(out), n
+
+
 def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
                      log=None, image_gen=None, stage_cb=None,
                      style_name="faithful", intensity=3, extra_notes="",
@@ -1515,6 +1587,13 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     checks, gate = quality_gate(cfg, script, truncated,
                                 unresolved_corr=unresolved_corr, out_dir=out_dir)
     repaired = []
+    # ★ 外科式修补 B2：图前没有指图口播 → 补一句锚点。
+    #   这条**放在闸门之外、每次都跑** —— 闸门管的是"有没有图"，管不了"有没有口播锚点"；
+    #   而"学员嘴里没有指图信号"→ 对账"画面引用"恒为 0，是分数最大的失真来源。
+    s_anchor, n_anchor = repair_missing_picture_anchors(script, log=log)
+    if s_anchor != script:
+        script = s_anchor
+        repaired.append(f"指图锚点×{n_anchor}")
     if gate:
         # 外科式修补 A：术语未当场解释 → 在首次出现处插一句大白话
         if checks.get("unexplained_terms", 0):

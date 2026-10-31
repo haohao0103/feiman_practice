@@ -418,9 +418,17 @@ def run_video_review(cfg, tid, setp, log):
     baseline_script = params.get("baseline_script", "")
 
     # ── 1 音轨
+    # ★ 支持**直接上传音频**（m4a/mp3/wav）：逐段对账 + 掌握度 + 改进稿只需要 ASR 文本，
+    #   画面分析只是附加的通用指标 → 传音频上传量从 1GB 降到 10MB 级。
+    is_audio = os.path.splitext(video)[1].lower() in (".m4a", ".mp3", ".wav",
+                                                       ".aac", ".flac", ".ogg")
     jobs.stage_progress(cfg, tid, "extract_audio", "抽取音轨", 0.5)
     wav = os.path.join(task_dir, "audio.wav")
-    ops.extract_audio(cfg, video, wav, log=log)
+    if is_audio:
+        wav = video                     # 已是音频，直接转写
+        log("  上传的是音频：跳过抽音轨与画面分析（对账/掌握度/改进稿只需要转写文本）")
+    else:
+        ops.extract_audio(cfg, video, wav, log=log)
     dur = ops.ffprobe_duration(cfg, video)
 
     # ── 2 ASR
@@ -442,10 +450,15 @@ def run_video_review(cfg, tid, setp, log):
     metrics = analyze_speech(segs, dur, cn, cfg)
     log(f"  指标: 时长 {dur:.0f}s 字数 {cn} 语速 {metrics['cpm']}")
 
-    # ── 4 画面分析
-    jobs.stage_progress(cfg, tid, "visual", "画面构成分析", 0.2)
-    vis = analyze_visual(cfg, video, task_dir, log=log)
-    log(f"  画面: 切图 {vis['scene_changes']} 次 可见率 {vis['diagram_ratio']*100:.0f}%")
+    # ── 4 画面分析（音频上传时跳过）
+    if is_audio:
+        vis = {"scene_changes": 0, "diagram_ratio": 0.0, "frames": [],
+               "note": "音频上传，未做画面分析"}
+        log("  画面分析：跳过（音频上传）")
+    else:
+        jobs.stage_progress(cfg, tid, "visual", "画面构成分析", 0.2)
+        vis = analyze_visual(cfg, video, task_dir, log=log)
+        log(f"  画面: 切图 {vis['scene_changes']} 次 可见率 {vis['diagram_ratio']*100:.0f}%")
 
     # ── 5 对账
     jobs.stage_progress(cfg, tid, "baseline", "与课件逐段对账", 0.5)
