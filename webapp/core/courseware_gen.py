@@ -1076,12 +1076,13 @@ def _orphan_images(out_dir, script):
 
 
 def _pic_coverage(script, frame_manifest):
-    """段配图覆盖率：分母 = **有候选帧的段**。
+    """段配图覆盖率：分母 = **有候选图的段**（原视频帧或自制图）。
 
-    ★ 为什么要换分母：纯口播段（视频里没有画面）**抽不到帧** → 本来就没有图可配。
+    ★ 为什么要换分母：纯口播段（视频里没有画面）**抽不到帧** → 本来就没有图可配，
       用"全部段"当分母会把它算成"该配没配"→ 指标失真（实测 31.6% 误报）。
-      有候选帧的段才该被要求配图。
-    返回 (百分比, 配了图的段数, 有候选帧的段数)。
+    ★ 自制图也要进分母：自制图配在某一段上，那一段就有图可配 ——
+      不进分母会出现"分子 > 分母"（实测 7/6 = 116.7%）。
+    返回 (百分比, 配了图的段数, 有候选图的段数)。
     """
     segs = _split_script_segments(script)
     if not segs:
@@ -1096,8 +1097,12 @@ def _pic_coverage(script, frame_manifest):
         # 旧 manifest 没有 seg_idx → 退回按段标题匹配
         titles = set((fr.get("seg") or "").strip() for fr in (frame_manifest or []))
         n_cand = sum(1 for t, _s, _e, _b in segs if t.strip() in titles) or len(segs)
+    # 配了**自制图**的段也算"有候选图"（否则分子会大于分母）
+    n_dia = sum(1 for _t, _s, _e, b in segs
+                if re.search(r"!\[[^\]]*\]\(diagrams/", b))
+    n_cand = max(n_cand, n_with_pic)
     denom = max(1, n_cand)
-    return round(n_with_pic * 100 / denom, 1), n_with_pic, n_cand
+    return (min(100.0, round(n_with_pic * 100 / denom, 1)), n_with_pic, n_cand)
 
 
 def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=None,
