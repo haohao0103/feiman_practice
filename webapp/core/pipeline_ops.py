@@ -271,18 +271,21 @@ def asr_to_text(segs):
 
 
 # ================================================================ LLM
-def call_llm(cfg, system, user, log=None, max_tokens=None):
+def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None):
     """OpenAI 兼容协议调用，双通道容错。
 
     依次尝试所有已配置通道（主通道 llm_* → 备用通道 llm2_*）。
     任一通道成功即返回文本；全部失败或无任何通道配置时返回 None（调用方降级）。
     兼容小米 MiMo：同时带 api-key 与 Authorization: Bearer 两个头。
     max_tokens：可选，覆盖 cfg["llm_max_tokens"]（长输出任务用，避免被截断）。
+    timeout：可选，覆盖 cfg["llm_timeout"]（长 payload 的任务要更久）。
+    ★ 返回空内容算**该通道失败** → 继续试下一个通道（实测长 payload 偶发空返回）。
     """
     import urllib.request
     channels = cfgmod.llm_channels(cfg)
     if not channels:
         return None
+    tmo = int(timeout or cfg["llm_timeout"])
     payload = {
         "model": None,  # 每通道单独覆盖
         "messages": [{"role": "system", "content": system},
@@ -301,20 +304,33 @@ def call_llm(cfg, system, user, log=None, max_tokens=None):
                      "api-key": key})
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=cfg["llm_timeout"]) as r:
+            with urllib.request.urlopen(req, timeout=tmo) as r:
                 data = json.loads(r.read().decode("utf-8"))
         except Exception as e:
             last_err = e
             if log:
-                log(f"  LLM[{label}] 调用失败: {e}")
+                log(f"  LLM[{label}] 调用失败: {type(e).__name__}: {str(e)[:100]}"
+                    f"（{time.time()-t0:.1f}s / 超时 {tmo}s）")
             continue
         if log:
             log(f"  LLM[{label}] 完成 {time.time()-t0:.1f}s :: {model}")
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except Exception:
             last_err = "响应解析失败"
+            if log:
+                log(f"  LLM[{label}] 响应结构异常，换下一个通道")
             continue
+        # ★ 返回空内容 = **该通道失败**，必须继续试下一个通道。
+        #   （旧实现直接 return ""，备用通道根本没被试 → 上层报的"双通道均不可用"是假的；
+        #    实测：长 payload 的调用偶发返回 content=""，一道 180s 才放弃整个任务）
+        if not isinstance(content, str) or not content.strip():
+            last_err = "返回空内容"
+            if log:
+                log(f"  LLM[{label}] 返回空内容（耗时 {time.time()-t0:.1f}s），"
+                    f"换下一个通道")
+            continue
+        return content
     if log:
         log(f"  LLM 全部通道失败: {last_err}")
     return None

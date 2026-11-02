@@ -594,7 +594,9 @@ _FACT_SYS = """你是严谨的内容核查员。对比「原始视频转写」�
 
 def fact_check(cfg, transcript, script, log=None):
     user = f"【原始转写】\n{transcript}\n\n【生成的讲课稿】\n{script}\n\n请输出纠错 JSON 列表。"
-    raw = ops.call_llm(cfg, _FACT_SYS, user, log=log)
+    # ★ 长 payload（整篇转写 + 整篇稿子）实测要 130~180s → 给更宽的超时
+    raw = ops.call_llm(cfg, _FACT_SYS, user, log=log,
+                     timeout=cfg.get("llm_timeout_long", 600))
     if not raw:
         # LLM 双通道都不可用 → 显式报错，绝不静默当成"没有错误"
         raise RuntimeError("事实核查失败：LLM 双通道均不可用（不是'没有错误'）")
@@ -901,7 +903,7 @@ def _ensure_part_headings(script, outline):
 
 
 def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections,
-             meta, log=None):
+             meta, log=None, fact_check_failed=False):
     """组装单篇 markdown：正稿 + 附一画面清单 + 附二三处纠正 + 附三录制清单 + 附四回炉记录。"""
     script = _ensure_part_headings(script, outline)
     script = _normalize_headings(script)
@@ -959,6 +961,10 @@ def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections
             parts.append("")
     else:
         parts.append("（未检出明显错误）")
+    if fact_check_failed:
+        parts.append("")
+        parts.append("> **【注意】本次事实核查未完成**（LLM 调用失败）—— "
+                     "本稿未经与原视频的逐句核对，录制前请自行核对关键数据与规则表述。")
 
     # 附三 录制执行清单（通用模板，对应标杆附一）
     parts.append("\n---\n\n## 附三 · 录制执行清单（给自己看，不念）\n")
@@ -1008,7 +1014,8 @@ def _orphan_images(out_dir, script):
     return len(orphans), len(on_disk)
 
 
-def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=None):
+def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=None,
+                 fact_check_failed=False):
     """质量闸门：返回 (自检字典, 不合格项列表[])。不合格必须显式报出。
 
     硬指标（红线）：
@@ -1045,6 +1052,9 @@ def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=Non
     if unresolved_corr:
         gate.append(f"{len(unresolved_corr)} 处已识别的事实错误没能改进正文（要求 0）："
                     + "、".join(c.get("original", "")[:18] for c in unresolved_corr[:3]))
+    if fact_check_failed:
+        gate.append("**事实核查未完成**（LLM 调用失败）—— 本稿未经事实核查，"
+                    "录制前请自行核对关键数据/规则表述")
     # 时长：单期在 5~8 分钟；**总时长**在预算内（讲不完的课件等于没写）
     total_min = round(checks.get("body_duration_min", 0), 1)
     checks["total_budget_min"] = cfg.get("script_total_min", 18)
@@ -1569,9 +1579,19 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     _st("build_script", "生成讲课稿", 1.0)
 
     _st("fact_check", "核查纠错", 0.0)
-    corrections = fact_check(cfg, transcript, script, log=log)
-    if log:
-        log(f"  纠错：{len(corrections)} 条")
+    corrections = []
+    fact_check_failed = False
+    try:
+        corrections = fact_check(cfg, transcript, script, log=log)
+        if log:
+            log(f"  纠错：{len(corrections)} 条")
+    except Exception as e:
+        # ★ 事实核查是**可选增强环节**，失败不该炸掉整个课件产出 ——
+        #   降级为"未经事实核查"继续出稿，但**必须显式报出**（闸门 + 附二 + 日志）。
+        #   （实测：长 payload 偶发返回空内容 → 旧实现直接失败 → 20 分钟白跑）
+        fact_check_failed = True
+        if log:
+            log(f"  ⚠ 事实核查未完成（{e}）—— 降级：继续出稿，但本稿未经事实核查")
     # ★ 把纠错**外科式改正到正文**（原来只列在附二 → 正文里的话还是错的，
     #   而这份稿子是照着念的，照着念就会念错）。改不掉的留给闸门报警。
     unresolved_corr = []
@@ -1585,7 +1605,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     # ── 自检 + 质量闸门（必须在写盘/出PDF**之前**，否则横幅进不了文件）
     _st("self_check", "稿子自检", 0.0)
     checks, gate = quality_gate(cfg, script, truncated,
-                                unresolved_corr=unresolved_corr, out_dir=out_dir)
+                                unresolved_corr=unresolved_corr, out_dir=out_dir,
+                                fact_check_failed=fact_check_failed)
     repaired = []
     # ★ 外科式修补 B2：图前没有指图口播 → 补一句锚点。
     #   这条**放在闸门之外、每次都跑** —— 闸门管的是"有没有图"，管不了"有没有口播锚点"；
@@ -1620,7 +1641,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
             repaired.append("动作清单" if r6 else "")
         # 修完重新判定
         checks, gate = quality_gate(cfg, script, truncated,
-                                    unresolved_corr=unresolved_corr, out_dir=out_dir)
+                                    unresolved_corr=unresolved_corr, out_dir=out_dir,
+                                    fact_check_failed=fact_check_failed)
     # 孤图清理（move 到 work/ 暂存区，不是 delete → 避开安全钩子；暂存区会被回收）
     n_moved, kept = move_orphan_images(out_dir, script, log=log)
     if n_moved:
@@ -1631,11 +1653,13 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
         diagram_manifest = [d for d in (diagram_manifest or [])
                             if os.path.basename(d.get("rel_path", "")) in keep_set]
         checks, gate = quality_gate(cfg, script, truncated,
-                                    unresolved_corr=unresolved_corr, out_dir=out_dir)
+                                    unresolved_corr=unresolved_corr, out_dir=out_dir,
+                                    fact_check_failed=fact_check_failed)
     _st("self_check", "稿子自检", 1.0)
 
     _st("assemble", "组装与PDF", 0.0)
-    md = assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections, meta, log=log)
+    md = assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections,
+                  meta, log=log, fact_check_failed=fact_check_failed)
     if gate:
         log("  ⚠ 质量闸门未通过：" + "；".join(gate))
         # ★ 横幅里不要用 ⚠ 符号：PingFang SC 没有该字形，PDF 里会渲染成方块

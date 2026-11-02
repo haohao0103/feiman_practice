@@ -123,7 +123,8 @@ DEFAULTS = {
     "llm2_base_url": os.environ.get("LLM2_BASE_URL", ""),
     "llm2_api_key": os.environ.get("LLM2_API_KEY", ""),
     "llm2_model": os.environ.get("LLM2_MODEL", "mimo-v2.6-pro"),
-    "llm_timeout": 180,
+    "llm_timeout": 300,     # ★ 长 payload 的成稿/事实核查实测要 130~180s，180 太紧
+    "llm_timeout_long": 600,  # 整篇转写+整篇稿子的核对类调用
     "llm_max_tokens": 8000,
     # 讲课稿一次要写完整篇（≈5600~10000 汉字 ≈ 8000~14000 token），
     # 用通用 8000 会被**截断**（实测：稿子在"——好，"处断掉，尾部收尾段/动作清单全丢，
