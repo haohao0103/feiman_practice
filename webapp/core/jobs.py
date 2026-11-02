@@ -229,11 +229,12 @@ def _run(cfg, tid):
         # 放在这里而不是各 runner 里 —— 这是所有任务唯一的收尾单点。
         try:
             from . import cleanup as cl
-            cl.protect([task_dir])
+            _td = _task_dir(cfg, tid)      # ★ 这里没有 task_dir 变量，要自己取
+            cl.protect([_td])
             try:
                 st = cl.maybe_run(cfg, log=lambda m: _log(cfg, tid, m))
             finally:
-                cl.unprotect([task_dir])   # 成对解除，否则这个目录永远清不掉
+                cl.unprotect([_td])       # 成对解除，否则这个目录永远清不掉
             if st:
                 _log(cfg, tid, f"暂存区清理：释放 "
                                f"{st['freed_bytes']/1048576:.0f}MB，"

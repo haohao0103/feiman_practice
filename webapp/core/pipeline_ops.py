@@ -327,8 +327,15 @@ def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None):
         if not isinstance(content, str) or not content.strip():
             last_err = "返回空内容"
             if log:
+                # ★ 把响应结构一起打出来（下次一眼看出是 finish_reason=length、
+                #   还是内容在别的字段、还是 usage 异常）——别再靠猜。
+                ch0 = (data.get("choices") or [{}])[0]
+                msg0 = ch0.get("message") or {}
+                extra = {k: (len(str(v)) if v else 0)
+                         for k, v in msg0.items() if k != "content" and v}
                 log(f"  LLM[{label}] 返回空内容（耗时 {time.time()-t0:.1f}s），"
-                    f"换下一个通道")
+                    f"换下一个通道 | finish_reason={ch0.get('finish_reason')!r} "
+                    f"usage={data.get('usage')} msg其他字段长度={extra}")
             continue
         return content
     if log:

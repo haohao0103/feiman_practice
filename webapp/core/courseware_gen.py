@@ -592,23 +592,54 @@ _FACT_SYS = """你是严谨的内容核查员。对比「原始视频转写」�
 只输出 JSON。"""
 
 
-def fact_check(cfg, transcript, script, log=None):
-    user = f"【原始转写】\n{transcript}\n\n【生成的讲课稿】\n{script}\n\n请输出纠错 JSON 列表。"
-    # ★ 长 payload（整篇转写 + 整篇稿子）实测要 130~180s → 给更宽的超时
-    raw = ops.call_llm(cfg, _FACT_SYS, user, log=log,
-                     timeout=cfg.get("llm_timeout_long", 600))
-    if not raw:
-        # LLM 双通道都不可用 → 显式报错，绝不静默当成"没有错误"
-        raise RuntimeError("事实核查失败：LLM 双通道均不可用（不是'没有错误'）")
-    data = _extract_json(raw)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and "corrections" in data:
-        return data["corrections"]
-    # ★ 解析失败 → 显式报错。旧实现返回 []，看起来"跑过了"其实没跑成 ——
-    #   静默通过比没有校验更危险。
-    tail = (raw or "")[-200:].replace("\n", " ")
-    raise RuntimeError(f"事实核查结果无法解析成 JSON（原文尾部：{tail!r}）")
+def fact_check(cfg, transcript, script, log=None, batch_size=5):
+    """事实核查：把稿子**按段分批**送检，合并各批纠错。
+
+    ★ 为什么要分批（实测踩坑）：整篇转写 + 整篇稿子**一次**送 →
+      模型跑 170~210 秒后返回**空内容**（两个通道都这样）→ 事实核查整步失败 →
+      20 分钟的成稿流水线整个作废。
+      同一份内容分批送（每批几段）→ 十几~几十秒正常返回。
+      和对账引擎"分批 + 抢救"是同一个套路：**小 payload 更稳、更快**。
+
+    每批都带**全量转写**（判"忠实度"必须看得到原文），但只带**本批段落**的稿子。
+    """
+    segs = _split_script_segments(script)
+    if not segs:
+        segs = [("(全文)", 0, len(script), script)]
+    all_corr = []
+    for i in range(0, len(segs), batch_size):
+        batch = segs[i:i + batch_size]
+        body = "\n\n".join(s[3] for s in batch)
+        heads = "；".join(s[0] for s in batch)
+        user = (f"【原始转写】\n{transcript}\n\n"
+                f"【本批要核查的段落】（共 {len(batch)} 段：{heads}）\n{body}\n\n"
+                f"只核查**本批**这几段的问题（不要核查其它段落），输出 JSON 列表。")
+        raw = ops.call_llm(cfg, _FACT_SYS, user, log=log,
+                           timeout=cfg.get("llm_timeout_long", 600))
+        if not raw:
+            if log:
+                log(f"  事实核查第 {i+1}~{i+len(batch)} 段：LLM 不可用，"
+                    f"本批跳过（其余批次继续）")
+            continue
+        data = _extract_json(raw)
+        if isinstance(data, dict) and "segments" in data:
+            data = data.get("corrections") or []
+        if isinstance(data, dict) and "corrections" in data:
+            data = data["corrections"]
+        if isinstance(data, dict):
+            for alias in ("items", "corrections", "list"):
+                if alias in data and isinstance(data[alias], list):
+                    data = data[alias]
+                    break
+        if isinstance(data, list):
+            all_corr.extend([c for c in data if isinstance(c, dict)])
+        else:
+            if log:
+                log(f"  事实核查第 {i+1}~{i+len(batch)} 段：返回不是 JSON 列表，跳过")
+    if log:
+        log(f"  事实核查：{len(segs)} 段分 {len(range(0, len(segs), batch_size))} 批，"
+            f"共 {len(all_corr)} 条纠错")
+    return all_corr
 
 
 # ============================================================== 5. 自制概念图（原生渲染，自动化）
@@ -1352,11 +1383,18 @@ def repair_missing_pictures(script, frame_manifest, log=None):
     used = set(os.path.basename(p) for p in
                re.findall(r"!\[[^\]]*\]\(([^)]+)\)", script))
     inserts = []
-    for title, s, e, body in segs:
+    for idx, (title, s, e, body) in enumerate(segs):
         if "![" in body:
             continue
         cands = [f for f in by_seg.get(title, []) if
                  os.path.basename(f["rel_path"]) not in used]
+        if not cands and idx < len(frame_manifest):
+            # ★ 标题对不上时的兜底：**按序号对应**。
+            #   frame_manifest 按大纲顺序抽，稿子的第 i 段就是大纲的第 i 段 ——
+            #   LLM 改写段标题时精确匹配就失效了（实测配图率 26.3% 修不上去）。
+            fr0 = frame_manifest[idx]
+            if os.path.basename(fr0["rel_path"]) not in used:
+                cands = [fr0]
         if not cands:
             continue
         fr = max(cands, key=lambda f: f.get("ink", 0))
