@@ -125,6 +125,12 @@ DEFAULTS = {
     "llm2_model": os.environ.get("LLM2_MODEL", "mimo-v2.6-pro"),
     "llm_timeout": 300,     # ★ 长 payload 的成稿/事实核查实测要 130~180s，180 太紧
     "llm_timeout_long": 600,  # 整篇转写+整篇稿子的核对类调用
+    # ★ reasoning 模型的思考 token 计入 max_tokens —— 给不够就会"思考完但没输出"
+    "factcheck_max_tokens": 24000,
+    # ★ 事实核查关掉深度思考：这是"比对"任务，不需要长推理；
+    #   而 MiMo 的思考 token 计入 max_tokens —— 思考烧光预算就一个字都输出不了。
+    #   实测同一批 payload：开思考 185s 空返回 / 关思考 11s 出 5 条纠错。
+    "factcheck_thinking": "off",
     "llm_max_tokens": 8000,
     # 讲课稿一次要写完整篇（≈5600~10000 汉字 ≈ 8000~14000 token），
     # 用通用 8000 会被**截断**（实测：稿子在"——好，"处断掉，尾部收尾段/动作清单全丢，

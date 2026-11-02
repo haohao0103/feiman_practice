@@ -607,15 +607,26 @@ def fact_check(cfg, transcript, script, log=None, batch_size=5):
     if not segs:
         segs = [("(全文)", 0, len(script), script)]
     all_corr = []
+    n_ok = 0
+    n_batch = 0
     for i in range(0, len(segs), batch_size):
         batch = segs[i:i + batch_size]
+        n_batch += 1
         body = "\n\n".join(s[3] for s in batch)
         heads = "；".join(s[0] for s in batch)
         user = (f"【原始转写】\n{transcript}\n\n"
                 f"【本批要核查的段落】（共 {len(batch)} 段：{heads}）\n{body}\n\n"
                 f"只核查**本批**这几段的问题（不要核查其它段落），输出 JSON 列表。")
+        # ★★ max_tokens 必须给足：MiMo 是 reasoning 模型，**思考 token 计入 max_tokens**。
+        #   实测：max_tokens=8000 时 reasoning_tokens 吃满 8000 → finish_reason='length'
+        #   → content 一字未出（只有 reasoning_content 24586 字符）→ 看起来像"空返回"。
+        #   加上分批（每批 5 段）+ max_tokens 24000 才稳。
+        _th = cfg.get("factcheck_thinking", "off")
+        _thinking = {"type": "disabled"} if _th == "off" else None
         raw = ops.call_llm(cfg, _FACT_SYS, user, log=log,
-                           timeout=cfg.get("llm_timeout_long", 600))
+                           max_tokens=cfg.get("factcheck_max_tokens", 24000),
+                           timeout=cfg.get("llm_timeout_long", 600),
+                           thinking=_thinking)
         if not raw:
             if log:
                 log(f"  事实核查第 {i+1}~{i+len(batch)} 段：LLM 不可用，"
@@ -633,12 +644,23 @@ def fact_check(cfg, transcript, script, log=None, batch_size=5):
                     break
         if isinstance(data, list):
             all_corr.extend([c for c in data if isinstance(c, dict)])
+            n_ok += 1
         else:
             if log:
                 log(f"  事实核查第 {i+1}~{i+len(batch)} 段：返回不是 JSON 列表，跳过")
     if log:
-        log(f"  事实核查：{len(segs)} 段分 {len(range(0, len(segs), batch_size))} 批，"
+        log(f"  事实核查：{len(segs)} 段分 {n_batch} 批，成功 {n_ok} 批，"
             f"共 {len(all_corr)} 条纠错")
+    # ★ 一批都没成功 → 显式报错。返回 [] 会让上层以为"没查出错误" = **静默通过**。
+    if n_ok == 0:
+        raise RuntimeError(f"事实核查失败：{n_batch} 批全部不可用"
+                           "（LLM 调用失败或返回不可解析）")
+    # 部分批次失败 → 明确标出来（附二会显示"部分段落未核查"）
+    if n_ok < n_batch:
+        all_corr = list(all_corr) + [{
+            "issue": "__partial__",
+            "original": f"事实核查只完成 {n_ok}/{n_batch} 批",
+            "correction": "", "basis": ""}]
     return all_corr
 
 
@@ -934,7 +956,7 @@ def _ensure_part_headings(script, outline):
 
 
 def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections,
-             meta, log=None, fact_check_failed=False):
+             meta, log=None, fact_check_failed=False, partial_note=""):
     """组装单篇 markdown：正稿 + 附一画面清单 + 附二三处纠正 + 附三录制清单 + 附四回炉记录。"""
     script = _ensure_part_headings(script, outline)
     script = _normalize_headings(script)
@@ -992,6 +1014,10 @@ def assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections
             parts.append("")
     else:
         parts.append("（未检出明显错误）")
+    if partial_note:
+        parts.append("")
+        parts.append(f"> **【注意】{partial_note}** —— 这些段落未经事实核查，"
+                     "录制前请自行核对。")
     if fact_check_failed:
         parts.append("")
         parts.append("> **【注意】本次事实核查未完成**（LLM 调用失败）—— "
@@ -1633,8 +1659,14 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     # ★ 把纠错**外科式改正到正文**（原来只列在附二 → 正文里的话还是错的，
     #   而这份稿子是照着念的，照着念就会念错）。改不掉的留给闸门报警。
     unresolved_corr = []
+    partial_note = ""
     if corrections:
-        script, unresolved_corr = apply_corrections(script, corrections, log=log)
+        # "__partial__" 是"部分批次未核查"的标记，不是事实错误 → 单独拿出来
+        real = [c for c in corrections if c.get("issue") != "__partial__"]
+        partial_note = next((c.get("original", "") for c in corrections
+                             if c.get("issue") == "__partial__"), "")
+        if real:
+            script, unresolved_corr = apply_corrections(script, real, log=log)
     _st("fact_check", "核查纠错", 1.0)
 
     meta = {"video": os.path.basename(video),
@@ -1697,7 +1729,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
 
     _st("assemble", "组装与PDF", 0.0)
     md = assemble(cfg, outline, script, frame_manifest, diagram_manifest, corrections,
-                  meta, log=log, fact_check_failed=fact_check_failed)
+                  meta, log=log, fact_check_failed=fact_check_failed,
+                  partial_note=partial_note)
     if gate:
         log("  ⚠ 质量闸门未通过：" + "；".join(gate))
         # ★ 横幅里不要用 ⚠ 符号：PingFang SC 没有该字形，PDF 里会渲染成方块

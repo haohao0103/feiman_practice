@@ -271,7 +271,8 @@ def asr_to_text(segs):
 
 
 # ================================================================ LLM
-def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None):
+def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None,
+             thinking=None):
     """OpenAI 兼容协议调用，双通道容错。
 
     依次尝试所有已配置通道（主通道 llm_* → 备用通道 llm2_*）。
@@ -279,6 +280,10 @@ def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None):
     兼容小米 MiMo：同时带 api-key 与 Authorization: Bearer 两个头。
     max_tokens：可选，覆盖 cfg["llm_max_tokens"]（长输出任务用，避免被截断）。
     timeout：可选，覆盖 cfg["llm_timeout"]（长 payload 的任务要更久）。
+    thinking：可选，透传给 API（如 {"type": "disabled"} 关闭深度思考）。
+        ★ MiMo 是 reasoning 模型，**思考 token 计入 max_tokens** —— 思考烧光预算时
+          finish_reason='length' 且 content 一字未出（表现为"空返回"）。
+          比对类任务（找错别字/自相矛盾）关掉思考又快又稳。
     ★ 返回空内容算**该通道失败** → 继续试下一个通道（实测长 payload 偶发空返回）。
     """
     import urllib.request
@@ -293,6 +298,8 @@ def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None):
         "temperature": cfg["llm_temperature"],
         "max_tokens": int(max_tokens or cfg["llm_max_tokens"]),
     }
+    if thinking is not None:
+        payload["thinking"] = thinking
     last_err = None
     for base, key, model, label in channels:
         payload["model"] = model
