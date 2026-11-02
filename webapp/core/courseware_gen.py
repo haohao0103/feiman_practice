@@ -338,8 +338,10 @@ def extract_segment_frames(cfg, video, outline, task_dir, log=None):
     os.makedirs(tmp, exist_ok=True)
     cand_path = os.path.join(tmp, "cand.jpg")
     best_path = os.path.join(tmp, "best.jpg")
+    flat_idx = 0
     for pi, part in enumerate(outline.get("parts", []), 1):
         for si, seg in enumerate(part.get("segments", []), 1):
+            flat_idx += 1
             a = float(seg.get("start_sec", 0))
             b = float(seg.get("end_sec", a + 5))
             if b <= a:
@@ -379,6 +381,8 @@ def extract_segment_frames(cfg, video, outline, task_dir, log=None):
                 "part": part.get("title", ""),
                 "part_idx": pi,
                 "seg": seg.get("title", ""),
+                "seg_idx": flat_idx,      # ★ 大纲里的第几段（跨期连续）——
+                                           #   配图率的分母要用它（只有它才知道哪段有候选帧）
                 "ink": best_s,
             })
             if log:
@@ -1071,8 +1075,33 @@ def _orphan_images(out_dir, script):
     return len(orphans), len(on_disk)
 
 
+def _pic_coverage(script, frame_manifest):
+    """段配图覆盖率：分母 = **有候选帧的段**。
+
+    ★ 为什么要换分母：纯口播段（视频里没有画面）**抽不到帧** → 本来就没有图可配。
+      用"全部段"当分母会把它算成"该配没配"→ 指标失真（实测 31.6% 误报）。
+      有候选帧的段才该被要求配图。
+    返回 (百分比, 配了图的段数, 有候选帧的段数)。
+    """
+    segs = _split_script_segments(script)
+    if not segs:
+        return 0.0, 0, 0
+    n_with_pic = sum(1 for _t, _s, _e, b in segs if "![" in b)
+    idx_set = set(fr.get("seg_idx") for fr in (frame_manifest or [])
+                  if fr.get("seg_idx"))
+    if idx_set:
+        # seg_idx 从 1 开始；稿子的第 i 段（0 基）对应 seg_idx = i+1
+        n_cand = sum(1 for i in range(len(segs)) if (i + 1) in idx_set)
+    else:
+        # 旧 manifest 没有 seg_idx → 退回按段标题匹配
+        titles = set((fr.get("seg") or "").strip() for fr in (frame_manifest or []))
+        n_cand = sum(1 for t, _s, _e, _b in segs if t.strip() in titles) or len(segs)
+    denom = max(1, n_cand)
+    return round(n_with_pic * 100 / denom, 1), n_with_pic, n_cand
+
+
 def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=None,
-                 fact_check_failed=False):
+                 fact_check_failed=False, frame_manifest=None):
     """质量闸门：返回 (自检字典, 不合格项列表[])。不合格必须显式报出。
 
     硬指标（红线）：
@@ -1120,10 +1149,14 @@ def quality_gate(cfg, script, truncated=False, unresolved_corr=None, out_dir=Non
         gate.append(f"整篇口播 {total_min:.1f} 分钟不在 "
                     f"{checks['total_budget_min']}~{checks['total_budget_max']} 分钟"
                     "（学员讲不完 → 覆盖率腰斩；要么砍深度，要么砍期数）")
-    # 画面结构
-    pic_rate = checks.get("seg_pic_rate", 0)
+    # 画面结构（分母 = 有候选帧的段，纯口播段抽不到帧不算"该配没配"）
+    pic_rate, n_pic, n_cand = _pic_coverage(script, frame_manifest)
+    checks["seg_pic_rate"] = pic_rate
+    checks["seg_pic_total"] = n_cand
+    checks["seg_pic_with"] = n_pic
     if pic_rate < 40:
-        gate.append(f"只有 {pic_rate}% 的段落配了图（要求 ≥40%）—— 课件不能是纯文字稿")
+        gate.append(f"只有 {pic_rate}% 的段落配了图（要求 ≥40%，共 {n_cand} 段有候选帧）"
+                    "—— 课件不能是纯文字稿")
     n_orphan, n_total = _orphan_images(out_dir, script)
     checks["orphan_images"] = n_orphan
     checks["images_total"] = n_total
@@ -1309,6 +1342,7 @@ def _shorten_candidates(orig):
 
     LLM 给的 original 常带括号说明（"…（原转写："…"）"）或省略号截断（"……"），
     这类整串在正文里必然找不到 → 去掉说明、截到标点前再试。
+    另外还常见"解释性前缀"（"就是：第二腿…"）—— 那不是正文原句，也要剥掉。
     """
     cands = []
     # ① 去掉括号说明
@@ -1316,12 +1350,17 @@ def _shorten_candidates(orig):
     s = s.strip()
     if s and s != orig:
         cands.append(s)
-    # ② 截到省略号/破折号/问号为止
-    s2 = re.split(r"……|…+|\s*——\s*", s)[0].strip()
-    if len(s2) >= 8 and s2 != s:
+    # ①b 剥掉解释性前缀（"就是："、"意思是："、"也就是说："…）
+    s2 = re.sub(r"^(就是|意思是|也就是说|换句话说|指的是|其实就是)\s*[:：、]\s*", "", s)
+    if s2 and s2 != s:
         cands.append(s2)
-        cands.append(s2[:20])
-        cands.append(s2[:14])
+        s = s2
+    # ② 截到省略号/破折号/问号为止
+    s3 = re.split(r"……|…+|\s*——\s*", s)[0].strip()
+    if len(s3) >= 8 and s3 != s:
+        cands.append(s3)
+        cands.append(s3[:20])
+        cands.append(s3[:14])
     # ③ 原串本身的前缀
     if len(orig) > 14:
         cands.append(orig[:14])
@@ -1618,8 +1657,10 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
 
     # 自制图：由 LLM 按内容判断该做几张（代码里的 max_diagrams 只是安全护栏，不是目标值）
     diagram_specs = []
+    flat_idx = 0
     for pi, part in enumerate(outline.get("parts", []), 1):
         for si, seg in enumerate(part.get("segments", []), 1):
+            flat_idx += 1
             if seg.get("needs_diagram") and seg.get("diagram_desc"):
                 diagram_specs.append(seg["diagram_desc"])
     max_diagrams = int(cfg.get("max_diagrams", 8))
@@ -1676,7 +1717,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
     _st("self_check", "稿子自检", 0.0)
     checks, gate = quality_gate(cfg, script, truncated,
                                 unresolved_corr=unresolved_corr, out_dir=out_dir,
-                                fact_check_failed=fact_check_failed)
+                                fact_check_failed=fact_check_failed,
+                                frame_manifest=frame_manifest)
     repaired = []
     # ★ 外科式修补 B2：图前没有指图口播 → 补一句锚点。
     #   这条**放在闸门之外、每次都跑** —— 闸门管的是"有没有图"，管不了"有没有口播锚点"；
@@ -1712,7 +1754,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
         # 修完重新判定
         checks, gate = quality_gate(cfg, script, truncated,
                                     unresolved_corr=unresolved_corr, out_dir=out_dir,
-                                    fact_check_failed=fact_check_failed)
+                                    fact_check_failed=fact_check_failed,
+                                    frame_manifest=frame_manifest)
     # 孤图清理（move 到 work/ 暂存区，不是 delete → 避开安全钩子；暂存区会被回收）
     n_moved, kept = move_orphan_images(out_dir, script, log=log)
     if n_moved:
@@ -1724,7 +1767,8 @@ def build_courseware(cfg, video, transcript, duration_sec, task_dir, out_dir,
                             if os.path.basename(d.get("rel_path", "")) in keep_set]
         checks, gate = quality_gate(cfg, script, truncated,
                                     unresolved_corr=unresolved_corr, out_dir=out_dir,
-                                    fact_check_failed=fact_check_failed)
+                                    fact_check_failed=fact_check_failed,
+                                    frame_manifest=frame_manifest)
     _st("self_check", "稿子自检", 1.0)
 
     _st("assemble", "组装与PDF", 0.0)
