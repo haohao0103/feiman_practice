@@ -812,8 +812,10 @@ def build_improved_script(cfg, style_name, intensity, segs, gap, metrics,
     user = ("【本次录制的评估结果与必须修掉的问题】\n" + fix_list + "\n\n" +
             "请在改写时**逐条落实**上述改法。\n\n" + user)
 
+    # ★ 输出是**整篇讲课稿** → 必须给足预算（默认 8000 会被思考挤掉 → 空返回）
     styled = ops.call_llm_stream(
-        cfg, system, user, log=log, progress_cb=progress_cb)
+        cfg, system, user, log=log, progress_cb=progress_cb,
+        max_tokens=cfg.get("script_max_tokens", 20000))
     if styled:
         if progress_cb:
             progress_cb(1.0)

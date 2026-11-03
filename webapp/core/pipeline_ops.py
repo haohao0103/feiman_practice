@@ -320,7 +320,18 @@ def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None,
                     f"（{time.time()-t0:.1f}s / 超时 {tmo}s）")
             continue
         if log:
-            log(f"  LLM[{label}] 完成 {time.time()-t0:.1f}s :: {model}")
+            # ★ 记 usage：prompt/completion/reasoning tokens 一眼看出"预算够不够"。
+            #   reasoning 模型的思考 token 也算在 completion_tokens 里，
+            #   占比高就说明 max_tokens 给紧了（思考挤掉了正式输出）。
+            u = data.get("usage") or {}
+            cd = u.get("completion_tokens_details") or {}
+            think = cd.get("reasoning_tokens") or 0
+            out_t = u.get("completion_tokens") or 0
+            ratio = (think * 100 // out_t) if out_t else 0
+            log(f"  LLM[{label}] 完成 {time.time()-t0:.1f}s :: {model}"
+                f" | tokens: prompt {u.get('prompt_tokens')} "
+                f"completion {out_t}（其中思考 {think} = {ratio}%）"
+                f" 上限 {payload['max_tokens']}")
         try:
             content = data["choices"][0]["message"]["content"]
         except Exception:
@@ -350,7 +361,8 @@ def call_llm(cfg, system, user, log=None, max_tokens=None, timeout=None,
     return None
 
 
-def call_llm_stream(cfg, system, user, log=None, progress_cb=None, token_cb=None):
+def call_llm_stream(cfg, system, user, log=None, progress_cb=None,
+                    token_cb=None, max_tokens=None):
     """流式调用（SSE），逐块上报进度。全部通道失败返回 None。
 
     progress_cb(frac 0~1)：基于"已接收字符数 / 预估输出长度"估算（预估取自脚本目标字数）。
@@ -371,7 +383,7 @@ def call_llm_stream(cfg, system, user, log=None, progress_cb=None, token_cb=None
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "temperature": cfg["llm_temperature"],
-        "max_tokens": cfg["llm_max_tokens"],
+        "max_tokens": int(max_tokens or cfg["llm_max_tokens"]),
         "stream": True,
     }
     last_err = None
@@ -426,7 +438,8 @@ def call_llm_stream(cfg, system, user, log=None, progress_cb=None, token_cb=None
                 log(f"  LLM[{label}] 流式调用失败: {e}")
             # 该通道流式失败 → 退回非流式兜底（仍给满进度）
             try:
-                fb = call_llm(cfg, system, user, log=log)
+                fb = call_llm(cfg, system, user, log=log,
+                               max_tokens=max_tokens)
                 if fb:
                     if progress_cb:
                         progress_cb(1.0)

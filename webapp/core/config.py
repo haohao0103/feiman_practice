@@ -135,6 +135,12 @@ DEFAULTS = {
     # 讲课稿一次要写完整篇（≈5600~10000 汉字 ≈ 8000~14000 token），
     # 用通用 8000 会被**截断**（实测：稿子在"——好，"处断掉，尾部收尾段/动作清单全丢，
     # 而流水线照样出稿、不报错）。所以成稿调用单独给大预算。
+    # ★ 各调用点的 token 预算 —— reasoning 模型"思考 token 计入 max_tokens"，
+    #   给紧了就会 finish_reason='length' → content 空 → 看起来像"没话说"。
+    #   经验值：思考占比 < 60% 才算宽裕（usage 日志里能看到占比）。
+    "outline_max_tokens": 16000,    # 大纲：20+ 段的 JSON
+    "next_draft_max_tokens": 24000,  # 改进稿：整篇
+    "repair_max_tokens": 16000,      # 外科式修补：几段文字（实测思考占 78%，余量要留够）
     "script_max_tokens": 20000,
     "script_max_tokens_retry": 32000,
     "llm_temperature": 0.7,

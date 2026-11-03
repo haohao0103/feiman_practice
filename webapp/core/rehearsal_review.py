@@ -551,7 +551,8 @@ def build_next_draft(cfg, courseware_md, mastery, style_name="faithful", intensi
         prob = ["（对账未发现明显问题，仅做口语润色）"]
     user = ("【本次试讲对账发现的问题】\n" + "\n".join(f"- {x}" for x in prob)
             + "\n\n【原课件】\n" + courseware_md + "\n\n请产出改进后的完整讲课稿 markdown。")
-    raw = ops.call_llm(cfg, _NEXT_SYS, user, log=log)
+    raw = ops.call_llm(cfg, _NEXT_SYS, user, log=log,
+                       max_tokens=cfg.get("next_draft_max_tokens", 24000))
     if not raw:
         raise RuntimeError("改进稿 LLM 调用失败（双通道均不可用）")
     return ops.extract_markdown(raw)

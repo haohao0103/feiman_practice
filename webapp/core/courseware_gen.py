@@ -68,7 +68,8 @@ _OUTLINE_SYS = """你是一门硬核交易/金融教学视频的「课程架构�
 def segment_outline(cfg, transcript, duration_sec, log=None):
     user = (f"视频时长约 {duration_sec/60:.1f} 分钟。以下是带时间戳的中文转写：\n\n"
             f"{transcript}\n\n请输出结构化大纲 JSON。")
-    raw = ops.call_llm(cfg, _outline_sys(cfg), user, log=log)
+    raw = ops.call_llm(cfg, _outline_sys(cfg), user, log=log,
+                       max_tokens=cfg.get("outline_max_tokens", 16000))
     if not raw:
         raise RuntimeError("分段大纲 LLM 调用失败（双通道均不可用）")
     outline = _extract_json(raw)
@@ -1205,7 +1206,8 @@ def repair_missing(cfg, script, checks, log=None):
     user = (f"需要补写的小节：{'、'.join(need)}\n\n"
             f"【讲稿正文】\n{body}\n\n"
             f"请只输出需要补写的那一节 markdown。")
-    raw = ops.call_llm(cfg, _REPAIR_SYS, user, log=log)
+    raw = ops.call_llm(cfg, _REPAIR_SYS, user, log=log,
+                       max_tokens=cfg.get("repair_max_tokens", 16000))
     if not raw:
         return script, []
     patch = ops.extract_markdown(raw).strip()
@@ -1261,7 +1263,8 @@ def repair_unexplained_terms(cfg, script, checks, log=None):
     user = ("请为下列术语各写一句大白话解释：\n"
             + "\n".join(f"{k+1}. {it['term']}（上下文：{it['ctx']}）"
                         for k, it in enumerate(items)))
-    raw = ops.call_llm(cfg, _TERM_FIX_SYS, user, log=log)
+    raw = ops.call_llm(cfg, _TERM_FIX_SYS, user, log=log,
+                       max_tokens=cfg.get("repair_max_tokens", 16000))
     if not raw:
         return script, []
     try:
@@ -1552,7 +1555,8 @@ def repair_missing_analogies(cfg, script, checks, log=None):
     listing = "\n".join(f"{i+1}. {t}｜{b.strip()[:120]}"
                         for i, (t, b) in enumerate(need))
     user = f"请为下列 {len(need)} 个段落各写一个贴题的类比：\n{listing}"
-    raw = ops.call_llm(cfg, _ANALOGY_FIX_SYS, user, log=log)
+    raw = ops.call_llm(cfg, _ANALOGY_FIX_SYS, user, log=log,
+                       max_tokens=cfg.get("repair_max_tokens", 16000))
     if not raw:
         return script, 0
     try:

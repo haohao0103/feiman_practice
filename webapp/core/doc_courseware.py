@@ -197,7 +197,8 @@ def doc_outline(cfg, text, headings, log=None):
                      for lv, ti, i in headings) if headings else "（文档无标题结构）"
     user = (f"【文档标题骨架】\n{skel}\n\n"
             f"【文档全文】\n{text}\n\n请输出结构化大纲 JSON。")
-    raw = cg.ops.call_llm(cfg, _DOC_OUTLINE_SYS, user, log=log)
+    raw = cg.ops.call_llm(cfg, _DOC_OUTLINE_SYS, user, log=log,
+                          max_tokens=cfg.get("outline_max_tokens", 16000))
     if not raw:
         raise RuntimeError("文档大纲 LLM 调用失败（双通道均不可用）")
     outline = cg._extract_json(raw)
